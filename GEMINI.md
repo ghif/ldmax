@@ -26,5 +26,5 @@ Python 3.10+ (standard for JAX/Flax NNX): Follow standard conventions
 - 001-jax-dit-training: Added Python 3.10+ (standard for JAX/Flax NNX) + JAX, Flax NNX, Grain, Optax, Orbax (checkpoints), TensorBoard, Hugging Face Hub
 
 <!-- MANUAL ADDITIONS START -->
-- Always run this code in conda environment `jax-cpu`.
+- Always run this code in conda environment `jax-cpu` or `jax-tpu`
 <!-- MANUAL ADDITIONS END -->
