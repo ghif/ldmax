@@ -79,7 +79,7 @@ def get_celeba_dataset(
     loader = grain.DataLoader(
         data_source=source,
         sampler=sampler,
-        worker_count=0,
+        worker_count=4,
         operations=transformations
     )
     

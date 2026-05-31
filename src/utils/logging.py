@@ -2,7 +2,7 @@
 
 import os
 from typing import Any, Mapping
-from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 
 class TensorBoardLogger:
     """Wrapper for TensorBoard SummaryWriter."""
@@ -34,11 +34,12 @@ class TensorBoardLogger:
         Args:
             step: Current step.
             name: Label for the images.
-            images: Image data (numpy array or torch tensor).
+            images: Image data (numpy array or JAX array).
         """
         import numpy as np
-        if hasattr(images, "device"): # JAX array or torch tensor
-            images = np.array(images)
+        # Convert to numpy array (works for JAX arrays and others)
+        if not isinstance(images, np.ndarray):
+            images = np.asarray(images)
         self.writer.add_images(name, images, step, dataformats="NHWC")
 
     def close(self):

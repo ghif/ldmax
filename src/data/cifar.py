@@ -73,7 +73,7 @@ def get_cifar10_dataset(
     loader = grain.DataLoader(
         data_source=source,
         sampler=sampler,
-        worker_count=0,  # Run in same process for simplicity
+        worker_count=4,  # Use background workers for parallel loading
         operations=transformations
     )
     

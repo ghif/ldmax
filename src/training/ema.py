@@ -18,6 +18,15 @@ class EMAManager:
         # Get a snapshot of the model state for EMA
         self.ema_state = nnx.state(model)
 
+    @staticmethod
+    @jax.jit
+    def _ema_update(ema_state, current_state, decay):
+        return jax.tree.map(
+            lambda e, c: decay * e + (1.0 - decay) * c if isinstance(c, jax.Array) else c,
+            ema_state,
+            current_state
+        )
+
     def update(self, model: nnx.Module):
         """Update EMA weights.
         
@@ -25,13 +34,7 @@ class EMAManager:
             model: The current model with updated weights.
         """
         current_state = nnx.state(model)
-        
-        # Simple EMA update: ema = decay * ema + (1 - decay) * current
-        self.ema_state = jax.tree.map(
-            lambda e, c: self.decay * e + (1 - self.decay) * c if isinstance(c, jax.Array) else c,
-            self.ema_state,
-            current_state
-        )
+        self.ema_state = self._ema_update(self.ema_state, current_state, self.decay)
 
     def apply_to(self, model: nnx.Module):
         """Apply EMA weights to a model instance."""

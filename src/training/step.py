@@ -24,20 +24,25 @@ def compute_loss(
         Scalar MSE loss.
     """
     # Split key for different operations
-    noise_key, time_key = jax.random.split(key)
+    noise_key, time_key, model_key = jax.random.split(key, 3)
     
     # 1. Sample noise
     noise = jax.random.normal(noise_key, latents.shape)
     t = jax.random.randint(time_key, (latents.shape[0],), 0, 1000)
     
     # 2. Add noise to latents (forward diffusion)
-    # Simple linear schedule
-    sqrt_alpha_prod = jnp.cos(t / 1000 * jnp.pi / 2)[:, None, None, None]
-    sqrt_one_minus_alpha_prod = jnp.sin(t / 1000 * jnp.pi / 2)[:, None, None, None]
-    noisy_latents = sqrt_alpha_prod * latents + sqrt_one_minus_alpha_prod * noise
+    # Standard linear schedule
+    betas = jnp.linspace(0.0001, 0.02, 1000)
+    alphas = 1.0 - betas
+    alphas_cumprod = jnp.cumprod(alphas)
+    
+    sqrt_alphas_cumprod = jnp.sqrt(alphas_cumprod[t])[:, None, None, None]
+    sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - alphas_cumprod[t])[:, None, None, None]
+    
+    noisy_latents = sqrt_alphas_cumprod * latents + sqrt_one_minus_alphas_cumprod * noise
     
     # 3. Predict noise with DiT
-    model_output = model(noisy_latents, t, labels)
+    model_output = model(noisy_latents, t, labels, rngs=nnx.Rngs(model_key))
     
     # If learn_sigma is True, model_output has 2*C channels. 
     # We take the first C channels for noise prediction.

@@ -7,6 +7,30 @@ from typing import Any, Optional, Tuple
 
 from src.models.dit.blocks import DiTBlock, FinalLayer
 
+def get_2d_sincos_pos_embed(embed_dim, grid_size):
+    """Create 2D sin-cos positional embeddings."""
+    grid_h = jnp.arange(grid_size, dtype=jnp.float32)
+    grid_w = jnp.arange(grid_size, dtype=jnp.float32)
+    grid = jnp.meshgrid(grid_w, grid_h)
+    grid = jnp.stack(grid, axis=0)
+    grid = grid.reshape([2, 1, grid_size, grid_size])
+    
+    assert embed_dim % 2 == 0
+    emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])
+    emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])
+    pos_embed = jnp.concatenate([emb_h, emb_w], axis=1)
+    return pos_embed[None, :, :]
+
+def get_1d_sincos_pos_embed_from_grid(embed_dim, grid):
+    assert embed_dim % 2 == 0
+    omega = jnp.arange(embed_dim // 2, dtype=jnp.float32)
+    omega /= embed_dim / 2.
+    omega = 1. / 10000**omega
+    grid = grid.flatten()
+    out = jnp.einsum('m,d->md', grid, omega)
+    emb = jnp.concatenate([jnp.sin(out), jnp.cos(out)], axis=1)
+    return emb
+
 class TimestepEmbedder(nnx.Module):
     """Embeds scalar timesteps into vector embeddings."""
 
@@ -48,13 +72,21 @@ class LabelEmbedder(nnx.Module):
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
 
-    def __call__(self, labels: jax.Array, train: bool, force_drop_ids: Optional[jax.Array] = None) -> jax.Array:
+    def __call__(self, labels: jax.Array, train: bool, rngs: Optional[nnx.Rngs] = None, force_drop_ids: Optional[jax.Array] = None) -> jax.Array:
         """Forward pass."""
-        use_dropout = self.dropout_prob > 0
-        if (train and use_dropout) or (force_drop_ids is not None):
-            # Implementation of classifier-free guidance dropout (simplified)
-            # In a real impl, we would replace labels with num_classes id
-            pass
+        if train and self.dropout_prob > 0:
+            if rngs is None:
+                # Fallback to internal if not provided, though not ideal for nnx
+                rng = nnx.Rngs().params()
+            else:
+                rng = rngs.params()
+            # Randomly replace some labels with the null label (num_classes)
+            drop_mask = jax.random.bernoulli(rng, self.dropout_prob, labels.shape)
+            labels = jnp.where(drop_mask, self.num_classes, labels)
+            
+        if force_drop_ids is not None:
+            labels = jnp.where(force_drop_ids, self.num_classes, labels)
+            
         return self.embedding_table(labels)
 
 class DiT(nnx.Module):
@@ -70,7 +102,7 @@ class DiT(nnx.Module):
         num_heads: int = 16,
         mlp_ratio: float = 4.0,
         num_classes: int = 1000,
-        learn_sigma: bool = True,
+        learn_sigma: bool = False,
         rngs: Optional[nnx.Rngs] = None,
     ):
         """Initialize DiT."""
@@ -86,9 +118,10 @@ class DiT(nnx.Module):
         self.t_embedder = TimestepEmbedder(hidden_size, rngs=rngs)
         self.y_embedder = LabelEmbedder(num_classes, hidden_size, dropout_prob=0.1, rngs=rngs)
         
-        # Positional embedding (learnable for simplicity, but DiT uses 2D sin-cos)
-        num_patches = (input_size // patch_size) ** 2
-        self.pos_embed = nnx.Param(jnp.zeros((1, num_patches, hidden_size)))
+        # Positional embedding (fixed 2D sin-cos)
+        grid_size = input_size // patch_size
+        pos_embed = get_2d_sincos_pos_embed(hidden_size, grid_size)
+        self.pos_embed = nnx.Param(pos_embed)
         
         # DiT blocks
         self.blocks = nnx.List([
@@ -105,7 +138,7 @@ class DiT(nnx.Module):
         c = self.out_channels
         h = w = int(x.shape[1] ** 0.5)
         x = x.reshape(x.shape[0], h, w, p, p, c)
-        x = jnp.einsum('nhwpqc->nhpwqc', x)
+        x = x.transpose(0, 1, 3, 2, 4, 5)
         imgs = x.reshape(x.shape[0], h * p, w * p, c)
         return imgs
 
@@ -114,17 +147,18 @@ class DiT(nnx.Module):
         p = self.patch_size
         n, h, w, c = x.shape
         x = x.reshape(n, h // p, p, w // p, p, c)
-        x = jnp.einsum('nhpwqc->nhw pqc', x)
+        x = x.transpose(0, 1, 3, 2, 4, 5)
         patches = x.reshape(n, (h // p) * (w // p), p * p * c)
         return patches
 
-    def __call__(self, x: jax.Array, t: jax.Array, y: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, t: jax.Array, y: jax.Array, rngs: Optional[nnx.Rngs] = None) -> jax.Array:
         """Forward pass.
         
         Args:
             x: Input latents shape (N, H, W, C).
             t: Timesteps shape (N,).
             y: Labels shape (N,).
+            rngs: Random number generators.
             
         Returns:
             Denoised latents shape (N, H, W, C).
@@ -135,7 +169,7 @@ class DiT(nnx.Module):
         
         # Embed conditioning
         t_emb = self.t_embedder(t)
-        y_emb = self.y_embedder(y, train=True)
+        y_emb = self.y_embedder(y, train=rngs is not None, rngs=rngs)
         c = t_emb + y_emb
         
         # DiT Blocks

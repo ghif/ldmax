@@ -55,9 +55,10 @@ class DiTBlock(nnx.Module):
         
         # AdaLN modulation parameters: 6 for each block 
         # (scale/shift for norm1, scale/shift for norm2, gate for attn, gate for mlp)
+        # Critical: the final linear layer must be zero-initialized
         self.adaLN_modulation = nnx.Sequential(
             nnx.silu,
-            nnx.Linear(hidden_size, 6 * hidden_size, rngs=rngs)
+            nnx.Linear(hidden_size, 6 * hidden_size, kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros, rngs=rngs)
         )
 
     def __call__(self, x: jax.Array, c: jax.Array) -> jax.Array:
@@ -101,10 +102,18 @@ class FinalLayer(nnx.Module):
             rngs: Random number generators.
         """
         self.norm_final = nnx.LayerNorm(num_features=hidden_size, rngs=rngs)
-        self.linear = nnx.Linear(hidden_size, patch_size * patch_size * out_channels, rngs=rngs)
+        self.linear = nnx.Linear(
+            hidden_size, patch_size * patch_size * out_channels, 
+            kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros, 
+            rngs=rngs
+        )
         self.adaLN_modulation = nnx.Sequential(
             nnx.silu,
-            nnx.Linear(hidden_size, 2 * hidden_size, rngs=rngs)
+            nnx.Linear(
+                hidden_size, 2 * hidden_size, 
+                kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros, 
+                rngs=rngs
+            )
         )
 
     def __call__(self, x: jax.Array, c: jax.Array) -> jax.Array:

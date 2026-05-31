@@ -18,6 +18,7 @@ from src.utils.rng import RNGManager
 from src.utils.config import load_config
 from src.utils.logging import TensorBoardLogger
 from src.utils.checkpoint import CheckpointManager
+from src.utils.prefetch import DevicePrefetcher
 
 from src.training.sampler import DDIMSampler
 from src.utils.vae import VAEManager
@@ -39,6 +40,8 @@ def main(_):
         # 1. Load config
         config = load_config(FLAGS.config)
         os.makedirs(FLAGS.output_dir, exist_ok=True)
+        
+        use_bf16 = config.training.get("mixed_precision", False)
         
         # 2. Setup RNG, Logger, Checkpointer, VAE, Sampler
         rng_manager = RNGManager(config.training.seed)
@@ -64,6 +67,7 @@ def main(_):
             depth=config.model.depth,
             num_heads=config.model.num_heads,
             num_classes=config.model.num_classes,
+            learn_sigma=config.model.get("learn_sigma", False),
             rngs=nnx.Rngs(rng_manager.next())
         )
         
@@ -81,9 +85,39 @@ def main(_):
             optax.adamw(config.training.learning_rate, weight_decay=config.training.weight_decay),
             wrt=nnx.Param
         )
+        
+        if use_bf16:
+             # Ensure optimizer state is sharded and ideally in fp32 for stability 
+             # (Optax does this by default if we don't cast it)
+             pass
+
         # Replicate optimizer state
         nnx.update(optimizer, jax.device_put(nnx.state(optimizer), replicate_sharding))
         
+        # 3b. Setup Sampling Model and JITted function (outside loop)
+        sampling_model = DiT(
+            input_size=config.model.input_size,
+            patch_size=config.model.patch_size,
+            in_channels=config.model.in_channels,
+            hidden_size=config.model.hidden_size,
+            depth=config.model.depth,
+            num_heads=config.model.num_heads,
+            num_classes=config.model.num_classes,
+            learn_sigma=config.model.get("learn_sigma", False),
+            rngs=nnx.Rngs(rng_manager.next())
+        )
+        # Ensure sampling model is on the mesh
+        nnx.update(sampling_model, jax.device_put(nnx.state(sampling_model), replicate_sharding))
+
+        @nnx.jit
+        def model_fn(model, x, t, y):
+            out = model(x, t, y)
+            # If learn_sigma is True, model_output has 2*C channels. 
+            # We take the first C channels for noise prediction.
+            if out.shape[-1] == x.shape[-1] * 2:
+                return jnp.split(out, 2, axis=-1)[0]
+            return out
+
         # 4. Load Data
         if config.dataset == "cifar10":
             dataset = get_cifar10_dataset(
@@ -102,17 +136,20 @@ def main(_):
         else:
             raise ValueError(f"Unknown dataset: {config.dataset}")
         
+        # Wrap dataset with device prefetcher
+        dataset = DevicePrefetcher(dataset, data_sharding)
+        dataset_iter = iter(dataset)
+
         # 5. Training Loop
         print(f"Starting training for {config.training.total_steps} steps...")
-        use_bf16 = getattr(config.training, "mixed_precision", False)
         
         # Simple training loop
         for step in tqdm(range(config.training.total_steps)):
-            batch = next(iter(dataset))
+            batch = next(dataset_iter)
             
-            # Shard the batch across devices
-            batch_images = jax.device_put(batch["image"], data_sharding)
-            batch_labels = jax.device_put(batch["label"], data_sharding)
+            # Batch is already sharded and on device thanks to DevicePrefetcher
+            batch_images = batch["image"]
+            batch_labels = batch["label"]
             
             # 1. VAE Encoding (latents)
             latents = encode_fn(batch_images, rng_manager.next())
@@ -136,41 +173,34 @@ def main(_):
                 
             # Sampling
             if step % config.evaluation.sampling_interval == 0:
-                sample_labels = jnp.zeros((config.training.batch_size,), dtype=jnp.int32)
+                # Use a mix of classes for visualization
+                num_samples = min(config.training.batch_size, 10)
+                sample_labels = jnp.arange(num_samples)
+                if config.training.batch_size > num_samples:
+                    sample_labels = jnp.concatenate([sample_labels, jnp.zeros((config.training.batch_size - num_samples,), dtype=jnp.int32)])
+                
                 sample_labels = jax.device_put(sample_labels, data_sharding)
+                null_labels = jnp.full_like(sample_labels, fill_value=config.model.num_classes)
                 
-                # create a temporary model for sampling to apply EMA without affecting training weights
-                sampling_model = DiT(
-                    input_size=config.model.input_size,
-                    patch_size=config.model.patch_size,
-                    in_channels=config.model.in_channels,
-                    hidden_size=config.model.hidden_size,
-                    depth=config.model.depth,
-                    num_heads=config.model.num_heads,
-                    num_classes=config.model.num_classes,
-                    rngs=nnx.Rngs(rng_manager.next())
-                )
-                # Ensure sampling model is on the mesh
-                nnx.update(sampling_model, jax.device_put(nnx.state(sampling_model), replicate_sharding))
-                
+                # Update sampling model with EMA weights or current model weights
                 if ema is not None:
                     ema.apply_to(sampling_model)
                 else:
                     nnx.update(sampling_model, nnx.state(model))
                 
-                @nnx.jit
-                def model_fn(x, t, y):
-                    out = sampling_model(x, t, y)
-                    if out.shape[-1] == x.shape[-1] * 2:
-                        return jnp.split(out, 2, axis=-1)[0]
-                    return out
-                    
                 sample_shape = (len(sample_labels), config.model.input_size, config.model.input_size, config.model.in_channels)
-                samples = sampler.sample(model_fn, sample_shape, rng_manager.next(), y=sample_labels)
+                samples = sampler.sample(
+                    lambda x, t, y: model_fn(sampling_model, x, t, y), 
+                    sample_shape, 
+                    rng_manager.next(), 
+                    y=sample_labels, 
+                    null_y=null_labels,
+                    cfg_scale=4.0
+                )
                 
                 # Decode samples back to pixel space for visualization
                 samples_pixel = vae_manager.decode(samples)
-                logger.log_images(step, "train/samples", samples_pixel)
+                logger.log_images(step, "train/samples", samples_pixel[:num_samples])
 
             # Checkpointing
             if (step % config.evaluation.checkpoint_interval == 0 and step > 0) or (step == config.training.total_steps - 1):
