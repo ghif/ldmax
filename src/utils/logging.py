@@ -2,7 +2,7 @@
 
 import os
 from typing import Any, Mapping
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 
 class TensorBoardLogger:
     """Wrapper for TensorBoard SummaryWriter."""

@@ -143,6 +143,10 @@ cython_debug/
 # OS
 .DS_Store
 
+# Research Artifacts
+tpu/
+*.ipynb
+
 # Orbax/Checkpoints
 checkpoints/
 outputs/
