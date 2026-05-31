@@ -1,50 +1,51 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+SYNC IMPACT REPORT
+- Version change: Template → 1.0.0
+- Principles established: 
+  1. Educational First & Clear Documentation
+  2. Clean Code Architecture
+  3. Collaborative AI Research
+  4. Visual Generative Focus
+  5. Deterministic Reproducibility
+- Sections updated: Core Principles, Development Standards, Code Review Process, Governance.
+- Templates checked: 
+  - .specify/templates/plan-template.md (Updated Gates reference)
+  - .specify/templates/spec-template.md (Verified)
+  - .specify/templates/tasks-template.md (Verified)
+- Follow-up TODOs: None.
+-->
+
+# LDMAX Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Educational First & Clear Documentation
+Code MUST be exceptionally well-documented (including inline comments, architectural guides, and comprehensive docstrings). Documentation and readability take precedence over extreme performance optimizations where the two conflict.
+**Rationale**: Facilitates seamless onboarding for students and researchers, ensuring the codebase serves as a learning resource.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Clean Code Architecture
+The repository MUST adhere to clean code principles, including SOLID design patterns, clear separation of concerns, and robust abstraction layers. Use dependency injection for model components to ensure testability.
+**Rationale**: Maintains a highly maintainable and robust structure as research complexity grows.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Collaborative AI Research
+Architecture MUST be highly modular, enabling researchers to easily swap model components, datasets, and training loop implementations without modifying core framework logic.
+**Rationale**: Encourages diverse experimentation and contributions from a broad research community.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Visual Generative Focus
+System tooling, data pipelines, and performance optimizations MUST prioritize spatial data processing, as well as image and video generation tasks.
+**Rationale**: Aligns repository development with the primary research domain of visual generative models.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Deterministic Reproducibility (NON-NEGOTIABLE)
+All experiments and generative pipelines MUST enforce fixed random seeds by default and specify exact environment constraints (versions, hardware requirements).
+**Rationale**: Reproducibility is the cornerstone of credible AI research and collaboration.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## Development Standards
+All new code must undergo automated linting and pass a suite of unit tests that verify both behavioral correctness and adherence to the clean architecture principles.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
-
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
-
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+## Code Review Process
+Pull Requests must be reviewed for both technical accuracy and "educational clarity." A PR that is functionally correct but architecturally opaque should be refactored for clarity.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
+The LDMAX Constitution is the foundational document for project governance. Any amendments to these principles require a version bump and updates to all dependent templates.
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
-
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-05-29 | **Last Amended**: 2026-05-29

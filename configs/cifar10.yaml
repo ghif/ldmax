@@ -1,0 +1,24 @@
+dataset: "cifar10"
+
+model:
+  input_size: 4       # Latent space resolution (32/8)
+  patch_size: 2
+  in_channels: 4      # Number of VAE latent channels
+  hidden_size: 128
+  depth: 4
+  num_heads: 4
+  num_classes: 10
+
+training:
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  batch_size: 128
+  total_steps: 100000
+  seed: 42
+  ema_decay: 0.999
+  mixed_precision: true
+
+evaluation:
+  log_interval: 100
+  checkpoint_interval: 5000
+  sampling_interval: 1000

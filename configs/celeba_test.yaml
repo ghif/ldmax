@@ -1,0 +1,27 @@
+dataset: "celeba"
+
+model:
+  input_size: 32      # Latent space resolution (256/8)
+  patch_size: 2
+  in_channels: 4      # Number of VAE latent channels
+  hidden_size: 128
+  depth: 2
+  num_heads: 2
+  num_classes: 1      # CelebA loader currently returns dummy label 0
+
+training:
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  batch_size: 4
+  total_steps: 2
+  seed: 42
+  ema_decay: 0.999
+  mixed_precision: true
+
+data:
+  image_size: 256     # Resolution for CelebA loader (center cropped)
+
+evaluation:
+  log_interval: 1
+  checkpoint_interval: 1
+  sampling_interval: 1

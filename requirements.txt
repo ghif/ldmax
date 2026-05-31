@@ -1,0 +1,16 @@
+# JAX Ecosystem
+jax[cpu]
+flax
+grain
+optax
+orbax-checkpoint
+tensorboard
+huggingface_hub
+diffusers
+transformers
+jax-fid
+ml_collections
+datasets
+pytest
+ruff
+matplotlib
