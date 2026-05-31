@@ -89,7 +89,8 @@ def main(_):
             dataset = get_cifar10_dataset(
                 batch_size=config.training.batch_size,
                 shuffle=True,
-                seed=config.training.seed
+                seed=config.training.seed,
+                target_size=getattr(config.data, "image_size", None)
             )
         elif config.dataset == "celeba":
             dataset = get_celeba_dataset(

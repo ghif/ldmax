@@ -5,15 +5,15 @@ model:
   patch_size: 2
   in_channels: 4      # Number of VAE latent channels
   hidden_size: 128
-  depth: 4
-  num_heads: 4
+  depth: 2
+  num_heads: 2
   num_classes: 10
 
 training:
   learning_rate: 0.0001
   weight_decay: 0.01
-  batch_size: 128
-  total_steps: 100000
+  batch_size: 4
+  total_steps: 2
   seed: 42
   ema_decay: 0.999
   mixed_precision: true
@@ -22,6 +22,6 @@ data:
   image_size: 128     # Resize CIFAR-10 images for 16x16 latent space
 
 evaluation:
-  log_interval: 100
-  checkpoint_interval: 5000
-  sampling_interval: 1000
+  log_interval: 1
+  checkpoint_interval: 1
+  sampling_interval: 1
