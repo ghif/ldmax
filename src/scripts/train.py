@@ -67,6 +67,8 @@ def main(_):
             depth=config.model.depth,
             num_heads=config.model.num_heads,
             num_classes=config.model.num_classes,
+            label_mode=getattr(config.model, "label_mode", "class"),
+            label_dim=getattr(config.model, "label_dim", None),
             learn_sigma=config.model.get("learn_sigma", False),
             rngs=nnx.Rngs(rng_manager.next())
         )
@@ -103,6 +105,8 @@ def main(_):
             depth=config.model.depth,
             num_heads=config.model.num_heads,
             num_classes=config.model.num_classes,
+            label_mode=getattr(config.model, "label_mode", "class"),
+            label_dim=getattr(config.model, "label_dim", None),
             learn_sigma=config.model.get("learn_sigma", False),
             rngs=nnx.Rngs(rng_manager.next())
         )
@@ -131,7 +135,9 @@ def main(_):
                 batch_size=config.training.batch_size,
                 shuffle=True,
                 seed=config.training.seed,
-                target_size=config.data.image_size
+                target_size=config.data.image_size,
+                dataset_name=getattr(config.data, "dataset_name", "flwrlabs/celeba"),
+                dataset_config=getattr(config.data, "dataset_config", "img_align+identity+attr")
             )
         else:
             raise ValueError(f"Unknown dataset: {config.dataset}")
@@ -173,14 +179,24 @@ def main(_):
                 
             # Sampling
             if step % config.evaluation.sampling_interval == 0:
-                # Use a mix of classes for visualization
-                num_samples = min(config.training.batch_size, 10)
-                sample_labels = jnp.arange(num_samples)
-                if config.training.batch_size > num_samples:
-                    sample_labels = jnp.concatenate([sample_labels, jnp.zeros((config.training.batch_size - num_samples,), dtype=jnp.int32)])
-                
-                sample_labels = jax.device_put(sample_labels, data_sharding)
-                null_labels = jnp.full_like(sample_labels, fill_value=config.model.num_classes)
+                sample_count = min(
+                    getattr(config.evaluation, "sample_count", 16),
+                    config.training.batch_size,
+                )
+                if config.dataset == "celeba":
+                    # Use a few in-batch CelebA attribute vectors for visualization.
+                    num_samples = sample_count
+                    sample_labels = batch_labels[:num_samples]
+
+                    sample_labels = jax.device_put(sample_labels, data_sharding)
+                    null_labels = jnp.zeros_like(sample_labels)
+                else:
+                    # Use a mix of classes for visualization
+                    num_samples = sample_count
+                    sample_labels = jnp.arange(num_samples, dtype=jnp.int32) % max(1, config.model.num_classes)
+                    
+                    sample_labels = jax.device_put(sample_labels, data_sharding)
+                    null_labels = jnp.full_like(sample_labels, fill_value=config.model.num_classes)
                 
                 # Update sampling model with EMA weights or current model weights
                 if ema is not None:

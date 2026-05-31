@@ -63,31 +63,71 @@ class TimestepEmbedder(nnx.Module):
         return t_emb
 
 class LabelEmbedder(nnx.Module):
-    """Embeds class labels into vector embeddings."""
+    """Embeds class labels or binary attribute vectors into embeddings."""
 
-    def __init__(self, num_classes: int, hidden_size: int, dropout_prob: float, rngs: Optional[nnx.Rngs] = None):
+    def __init__(
+        self,
+        num_classes: int,
+        hidden_size: int,
+        dropout_prob: float,
+        label_mode: str = "class",
+        label_dim: Optional[int] = None,
+        rngs: Optional[nnx.Rngs] = None,
+    ):
         """Initialize the label embedder."""
-        use_cfg_embedding = True  # always reserved for null label
-        self.embedding_table = nnx.Embed(num_classes + (1 if use_cfg_embedding else 0), hidden_size, rngs=rngs)
+        self.label_mode = label_mode
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
 
+        if label_mode == "class":
+            use_cfg_embedding = True  # always reserved for null label
+            self.embedding_table = nnx.Embed(
+                num_classes + (1 if use_cfg_embedding else 0),
+                hidden_size,
+                rngs=rngs,
+            )
+            self.label_dim = None
+            self.proj = None
+        elif label_mode == "attributes":
+            if label_dim is None:
+                raise ValueError("label_dim is required when label_mode='attributes'")
+            self.label_dim = label_dim
+            self.proj = nnx.Linear(label_dim, hidden_size, rngs=rngs)
+            self.embedding_table = None
+        else:
+            raise ValueError(f"Unknown label_mode: {label_mode}")
+
     def __call__(self, labels: jax.Array, train: bool, rngs: Optional[nnx.Rngs] = None, force_drop_ids: Optional[jax.Array] = None) -> jax.Array:
         """Forward pass."""
+        if self.label_mode == "class":
+            if train and self.dropout_prob > 0:
+                if rngs is None:
+                    # Fallback to internal if not provided, though not ideal for nnx
+                    rng = nnx.Rngs().params()
+                else:
+                    rng = rngs.params()
+                # Randomly replace some labels with the null label (num_classes)
+                drop_mask = jax.random.bernoulli(rng, self.dropout_prob, labels.shape)
+                labels = jnp.where(drop_mask, self.num_classes, labels)
+
+            if force_drop_ids is not None:
+                labels = jnp.where(force_drop_ids, self.num_classes, labels)
+
+            return self.embedding_table(labels)
+
+        labels = labels.astype(jnp.float32)
         if train and self.dropout_prob > 0:
             if rngs is None:
-                # Fallback to internal if not provided, though not ideal for nnx
                 rng = nnx.Rngs().params()
             else:
                 rng = rngs.params()
-            # Randomly replace some labels with the null label (num_classes)
-            drop_mask = jax.random.bernoulli(rng, self.dropout_prob, labels.shape)
-            labels = jnp.where(drop_mask, self.num_classes, labels)
-            
+            drop_mask = jax.random.bernoulli(rng, self.dropout_prob, (labels.shape[0],))
+            labels = jnp.where(drop_mask[:, None], jnp.zeros_like(labels), labels)
+
         if force_drop_ids is not None:
-            labels = jnp.where(force_drop_ids, self.num_classes, labels)
-            
-        return self.embedding_table(labels)
+            labels = jnp.where(force_drop_ids[:, None], jnp.zeros_like(labels), labels)
+
+        return self.proj(labels)
 
 class DiT(nnx.Module):
     """Diffusion Transformer."""
@@ -102,6 +142,8 @@ class DiT(nnx.Module):
         num_heads: int = 16,
         mlp_ratio: float = 4.0,
         num_classes: int = 1000,
+        label_mode: str = "class",
+        label_dim: Optional[int] = None,
         learn_sigma: bool = False,
         rngs: Optional[nnx.Rngs] = None,
     ):
@@ -116,7 +158,14 @@ class DiT(nnx.Module):
         
         # Timestep and label embedding
         self.t_embedder = TimestepEmbedder(hidden_size, rngs=rngs)
-        self.y_embedder = LabelEmbedder(num_classes, hidden_size, dropout_prob=0.1, rngs=rngs)
+        self.y_embedder = LabelEmbedder(
+            num_classes,
+            hidden_size,
+            dropout_prob=0.1,
+            label_mode=label_mode,
+            label_dim=label_dim,
+            rngs=rngs,
+        )
         
         # Positional embedding (fixed 2D sin-cos)
         grid_size = input_size // patch_size

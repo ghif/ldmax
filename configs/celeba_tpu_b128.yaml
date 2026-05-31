@@ -1,13 +1,13 @@
-dataset: "celeba"
+/psdataset: "celeba"
 
 model:
-  input_size: 32      # Latent space resolution (256/8)
+  input_size: 32
   patch_size: 2
-  in_channels: 4      # Number of VAE latent channels
+  in_channels: 4
   hidden_size: 384
   depth: 12
   num_heads: 6
-  num_classes: 40     # Number of CelebA binary attributes
+  num_classes: 40
   label_mode: "attributes"
   label_dim: 40
 
@@ -21,7 +21,7 @@ training:
   mixed_precision: true
 
 data:
-  image_size: 256     # Resolution for CelebA loader (center cropped)
+  image_size: 256
   dataset_name: "flwrlabs/celeba"
   dataset_config: "img_align+identity+attr"
 

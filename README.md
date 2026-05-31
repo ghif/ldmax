@@ -56,6 +56,15 @@ export PYTHONPATH=$PYTHONPATH:.
 python -m src.scripts.train --config configs/celeba.yaml --output_dir ./outputs/celeba
 ```
 
+**CelebA TPU v6e batch sweep:**
+```bash
+export PYTHONPATH=$PYTHONPATH:.
+python -m src.scripts.train --config configs/celeba_tpu_b128.yaml --output_dir ./outputs/celeba_b128
+python -m src.scripts.train --config configs/celeba_tpu_b256.yaml --output_dir ./outputs/celeba_b256
+python -m src.scripts.train --config configs/celeba_tpu_b384.yaml --output_dir ./outputs/celeba_b384
+```
+Use the run with the best samples/sec and stable loss as the final CelebA TPU configuration.
+
 ### 2. Monitoring
 
 Track loss and view periodic visual samples in TensorBoard:

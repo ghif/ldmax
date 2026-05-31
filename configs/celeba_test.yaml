@@ -7,7 +7,9 @@ model:
   hidden_size: 128
   depth: 2
   num_heads: 2
-  num_classes: 1      # CelebA loader currently returns dummy label 0
+  num_classes: 40     # Number of CelebA binary attributes
+  label_mode: "attributes"
+  label_dim: 40
 
 training:
   learning_rate: 0.0001
@@ -20,6 +22,8 @@ training:
 
 data:
   image_size: 256     # Resolution for CelebA loader (center cropped)
+  dataset_name: "flwrlabs/celeba"
+  dataset_config: "img_align+identity+attr"
 
 evaluation:
   log_interval: 1

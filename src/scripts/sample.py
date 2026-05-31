@@ -1,10 +1,12 @@
 """Standalone inference script for DiT."""
 
 import os
+import math
 from absl import app, flags
 from flax import nnx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import matplotlib.pyplot as plt
 
 from src.models.dit.dit import DiT
@@ -12,28 +14,44 @@ from src.training.sampler import DDIMSampler
 from src.utils.checkpoint import CheckpointManager
 from src.utils.vae import VAEManager
 from src.utils.rng import RNGManager
+from src.utils.config import load_config
+from src.data.celeba import CELEBA_ATTRIBUTE_NAMES
 
 FLAGS = flags.FLAGS
+flags.DEFINE_string("config", "configs/cifar10.yaml", "Path to the config file.")
 flags.DEFINE_string("checkpoint", "", "Path to the checkpoint.")
 flags.DEFINE_integer("num_samples", 16, "Number of images to generate.")
 flags.DEFINE_integer("num_steps", 50, "Number of sampling steps.")
 flags.DEFINE_float("cfg_scale", 1.5, "Classifier-Free Guidance scale.")
 flags.DEFINE_string("output_path", "./samples.png", "Output file path.")
+flags.DEFINE_integer("class_id", 0, "CIFAR-10 class id to sample when using a class-conditioned model.")
+flags.DEFINE_string(
+    "attribute_names",
+    "Smiling",
+    "Comma-separated CelebA attribute names to activate when sampling an attribute-conditioned model.",
+)
 
 def main(_):
     # 1. Setup RNG
     rng_manager = RNGManager(42)
+
+    # 2. Load config and build the matching model
+    config = load_config(FLAGS.config)
+    label_mode = getattr(config.model, "label_mode", "class")
+    label_dim = getattr(config.model, "label_dim", None)
     
-    # 2. Initialize Model (Architecture must match training)
-    # For MVP, we use hardcoded small dims matching cifar10.yaml baseline
+    # Initialize Model (Architecture must match training)
     model = DiT(
-        input_size=32,
-        patch_size=2,
-        in_channels=3,
-        hidden_size=128,
-        depth=4,
-        num_heads=4,
-        num_classes=10,
+        input_size=config.model.input_size,
+        patch_size=config.model.patch_size,
+        in_channels=config.model.in_channels,
+        hidden_size=config.model.hidden_size,
+        depth=config.model.depth,
+        num_heads=config.model.num_heads,
+        num_classes=config.model.num_classes,
+        label_mode=label_mode,
+        label_dim=label_dim,
+        learn_sigma=config.model.get("learn_sigma", False),
         rngs=nnx.Rngs(rng_manager.next())
     )
     
@@ -49,6 +67,7 @@ def main(_):
 
     # 4. Sample
     sampler = DDIMSampler()
+    vae_manager = VAEManager()
     
     @nnx.jit
     def model_fn(x, t, y):
@@ -56,9 +75,31 @@ def main(_):
         if out.shape[-1] == x.shape[-1] * 2:
             return jnp.split(out, 2, axis=-1)[0]
         return out
-        
-    sample_labels = jnp.zeros((FLAGS.num_samples,), dtype=jnp.int32) # default class 0
-    sample_shape = (FLAGS.num_samples, 32, 32, 3)
+
+    if config.dataset == "cifar10":
+        sample_labels = jnp.full((FLAGS.num_samples,), FLAGS.class_id, dtype=jnp.int32)
+        null_labels = jnp.full((FLAGS.num_samples,), config.model.num_classes, dtype=jnp.int32)
+    elif config.dataset == "celeba":
+        sample_labels = jnp.zeros((FLAGS.num_samples, config.model.label_dim), dtype=jnp.int32)
+        requested_attributes = [name.strip() for name in FLAGS.attribute_names.split(",") if name.strip()]
+        for attr_name in requested_attributes:
+            if attr_name not in CELEBA_ATTRIBUTE_NAMES:
+                raise ValueError(
+                    f"Unknown CelebA attribute: {attr_name}. "
+                    f"Valid names include: {', '.join(CELEBA_ATTRIBUTE_NAMES[:5])}, ..."
+                )
+            attr_idx = CELEBA_ATTRIBUTE_NAMES.index(attr_name)
+            sample_labels = sample_labels.at[:, attr_idx].set(1)
+        null_labels = jnp.zeros_like(sample_labels)
+    else:
+        raise ValueError(f"Unknown dataset: {config.dataset}")
+
+    sample_shape = (
+        FLAGS.num_samples,
+        config.model.input_size,
+        config.model.input_size,
+        config.model.in_channels,
+    )
     
     print(f"Sampling {FLAGS.num_samples} images...")
     samples = sampler.sample(
@@ -67,17 +108,19 @@ def main(_):
         rng_manager.next(), 
         num_inference_steps=FLAGS.num_steps,
         y=sample_labels,
+        null_y=null_labels,
         cfg_scale=FLAGS.cfg_scale
     )
+
+    # Decode from latent space back to pixel space for visualization.
+    samples = vae_manager.decode(samples)
     
     # 5. Save Grid
-    grid_size = int(FLAGS.num_samples ** 0.5)
+    grid_size = int(math.ceil(FLAGS.num_samples ** 0.5))
     fig, axes = plt.subplots(grid_size, grid_size, figsize=(8, 8))
     for i, ax in enumerate(axes.flat):
         if i < FLAGS.num_samples:
-            img = (np.array(samples[i]) * 255).astype(np.uint8) if hasattr(samples, "device") else samples[i]
-            # Simple [0, 1] scaling for visualization
-            img = (img - img.min()) / (img.max() - img.min() + 1e-5)
+            img = np.asarray(samples[i])
             ax.imshow(img)
         ax.axis("off")
     

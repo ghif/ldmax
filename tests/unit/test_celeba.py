@@ -18,6 +18,7 @@ def test_celeba_loader_shapes():
     assert "image" in batch
     assert "label" in batch
     assert batch["image"].shape == (batch_size, target_size, target_size, 3)
+    assert batch["label"].shape == (batch_size, 40)
     
     # Check range [-1, 1]
     assert np.min(batch["image"]) >= -1.1 # allowance for small float errors
@@ -32,6 +33,8 @@ def test_visualize_celeba():
     # Get first batch
     batch = next(iter(loader))
     images = batch["image"]
+    labels = batch["label"]
+    assert labels.shape == (batch_size, 40)
     
     # Denormalize: [-1, 1] -> [0, 1]
     images = (images + 1.0) / 2.0
