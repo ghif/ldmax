@@ -27,7 +27,8 @@ def compute_loss(
     noise_key, time_key, model_key = jax.random.split(key, 3)
     
     # 1. Sample noise
-    noise = jax.random.normal(noise_key, latents.shape)
+    # Ensure noise matches latents dtype for MXU efficiency
+    noise = jax.random.normal(noise_key, latents.shape, dtype=latents.dtype)
     t = jax.random.randint(time_key, (latents.shape[0],), 0, 1000)
     
     # 2. Add noise to latents (forward diffusion)
@@ -38,6 +39,10 @@ def compute_loss(
     
     sqrt_alphas_cumprod = jnp.sqrt(alphas_cumprod[t])[:, None, None, None]
     sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - alphas_cumprod[t])[:, None, None, None]
+    
+    # Ensure constants match dtype
+    sqrt_alphas_cumprod = sqrt_alphas_cumprod.astype(latents.dtype)
+    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.astype(latents.dtype)
     
     noisy_latents = sqrt_alphas_cumprod * latents + sqrt_one_minus_alphas_cumprod * noise
     
@@ -62,7 +67,7 @@ def train_step(
     labels: jax.Array,
     rng_key: jax.Array,
     use_bf16: bool = False
-) -> Dict[str, jax.Array]:
+) -> Tuple[Dict[str, jax.Array], jax.Array]:
     """Perform a single training step on latents.
 
     Args:
@@ -74,15 +79,18 @@ def train_step(
         use_bf16: Whether to use bfloat16 mixed precision.
 
     Returns:
-        Dictionary of metrics (e.g., loss).
+        Tuple of (Dictionary of metrics, next_rng_key).
     """
+    # Split key on device to avoid host-device communication overhead
+    step_key, next_rng_key = jax.random.split(rng_key)
+
     if use_bf16:
         latents = latents.astype(jnp.bfloat16)
 
     def loss_fn(model):
-        return compute_loss(model, latents, labels, rng_key)
+        return compute_loss(model, latents, labels, step_key)
 
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     optimizer.update(model, grads)
     
-    return {"loss": loss}
+    return {"loss": loss}, next_rng_key

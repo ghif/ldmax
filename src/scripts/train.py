@@ -11,6 +11,7 @@ from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from tqdm import tqdm
 
 from src.models.dit.dit import DiT
+from src.models.unet.unet import UNetModel
 from src.data.cifar import get_cifar10_dataset
 from src.data.celeba import get_celeba_dataset
 from src.training.step import train_step
@@ -56,25 +57,50 @@ def main(_):
         # Jitted VAE encoding
         @jax.jit
         def encode_fn(images, key):
-            return vae_manager.encode(images, key)
+            encode_key, next_key = jax.random.split(key)
+            return vae_manager.encode(images, encode_key), next_key
 
         # 3. Initialize Model and Optimizer
-        model = DiT(
-            input_size=config.model.input_size,
-            patch_size=config.model.patch_size,
-            in_channels=config.model.in_channels,
-            hidden_size=config.model.hidden_size,
-            depth=config.model.depth,
-            num_heads=config.model.num_heads,
-            num_classes=config.model.num_classes,
-            label_mode=getattr(config.model, "label_mode", "class"),
-            label_dim=getattr(config.model, "label_dim", None),
-            learn_sigma=config.model.get("learn_sigma", False),
-            rngs=nnx.Rngs(rng_manager.next())
-        )
+        model_type = config.model.get("type", "dit")
+        if model_type == "dit":
+            model = DiT(
+                input_size=config.model.input_size,
+                patch_size=config.model.patch_size,
+                in_channels=config.model.in_channels,
+                hidden_size=config.model.hidden_size,
+                depth=config.model.depth,
+                num_heads=config.model.num_heads,
+                num_classes=config.model.num_classes,
+                label_mode=getattr(config.model, "label_mode", "class"),
+                label_dim=getattr(config.model, "label_dim", None),
+                learn_sigma=config.model.get("learn_sigma", False),
+                rngs=nnx.Rngs(rng_manager.next())
+            )
+        elif model_type == "unet":
+            model = UNetModel(
+                in_channels=config.model.in_channels,
+                out_channels=config.model.get("out_channels", config.model.in_channels),
+                model_channels=config.model.model_channels,
+                attention_resolutions=config.model.attention_resolutions,
+                num_res_blocks=config.model.num_res_blocks,
+                channel_mult=config.model.channel_mult,
+                num_heads=config.model.num_heads,
+                transformer_depth=config.model.get("transformer_depth", 1),
+                context_dim=config.model.get("context_dim", None),
+                num_classes=config.model.num_classes,
+                label_mode=getattr(config.model, "label_mode", "class"),
+                label_dim=getattr(config.model, "label_dim", None),
+                dropout=config.training.get("dropout", 0.0),
+                rngs=nnx.Rngs(rng_manager.next())
+            )
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
         
         # Replicate model state
-        nnx.update(model, jax.device_put(nnx.state(model), replicate_sharding))
+        model_state = nnx.state(model)
+        if use_bf16:
+            model_state = jax.tree.map(lambda x: x.astype(jnp.bfloat16) if x.dtype == jnp.float32 else x, model_state)
+        nnx.update(model, jax.device_put(model_state, replicate_sharding))
         
         # Optional EMA
         ema = EMAManager(model, decay=config.training.ema_decay) if hasattr(config.training, "ema_decay") else None
@@ -97,19 +123,37 @@ def main(_):
         nnx.update(optimizer, jax.device_put(nnx.state(optimizer), replicate_sharding))
         
         # 3b. Setup Sampling Model and JITted function (outside loop)
-        sampling_model = DiT(
-            input_size=config.model.input_size,
-            patch_size=config.model.patch_size,
-            in_channels=config.model.in_channels,
-            hidden_size=config.model.hidden_size,
-            depth=config.model.depth,
-            num_heads=config.model.num_heads,
-            num_classes=config.model.num_classes,
-            label_mode=getattr(config.model, "label_mode", "class"),
-            label_dim=getattr(config.model, "label_dim", None),
-            learn_sigma=config.model.get("learn_sigma", False),
-            rngs=nnx.Rngs(rng_manager.next())
-        )
+        if model_type == "dit":
+            sampling_model = DiT(
+                input_size=config.model.input_size,
+                patch_size=config.model.patch_size,
+                in_channels=config.model.in_channels,
+                hidden_size=config.model.hidden_size,
+                depth=config.model.depth,
+                num_heads=config.model.num_heads,
+                num_classes=config.model.num_classes,
+                label_mode=getattr(config.model, "label_mode", "class"),
+                label_dim=getattr(config.model, "label_dim", None),
+                learn_sigma=config.model.get("learn_sigma", False),
+                rngs=nnx.Rngs(rng_manager.next())
+            )
+        else:
+            sampling_model = UNetModel(
+                in_channels=config.model.in_channels,
+                out_channels=config.model.get("out_channels", config.model.in_channels),
+                model_channels=config.model.model_channels,
+                attention_resolutions=config.model.attention_resolutions,
+                num_res_blocks=config.model.num_res_blocks,
+                channel_mult=config.model.channel_mult,
+                num_heads=config.model.num_heads,
+                transformer_depth=config.model.get("transformer_depth", 1),
+                context_dim=config.model.get("context_dim", None),
+                num_classes=config.model.num_classes,
+                label_mode=getattr(config.model, "label_mode", "class"),
+                label_dim=getattr(config.model, "label_dim", None),
+                dropout=config.training.get("dropout", 0.0),
+                rngs=nnx.Rngs(rng_manager.next())
+            )
         # Ensure sampling model is on the mesh
         nnx.update(sampling_model, jax.device_put(nnx.state(sampling_model), replicate_sharding))
 
@@ -149,6 +193,10 @@ def main(_):
         # 5. Training Loop
         print(f"Starting training for {config.training.total_steps} steps...")
         
+        # Maintain RNG state on device to avoid host-device communication overhead
+        step_rng_key = jax.device_put(rng_manager.next(), replicate_sharding)
+        encode_rng_key = jax.device_put(rng_manager.next(), replicate_sharding)
+
         # Simple training loop
         for step in tqdm(range(config.training.total_steps)):
             batch = next(dataset_iter)
@@ -157,16 +205,16 @@ def main(_):
             batch_images = batch["image"]
             batch_labels = batch["label"]
             
-            # 1. VAE Encoding (latents)
-            latents = encode_fn(batch_images, rng_manager.next())
+            # 1. VAE Encoding (latents) - update on-device key
+            latents, encode_rng_key = encode_fn(batch_images, encode_rng_key)
             
-            # 2. Training Step
-            metrics = train_step(
+            # 2. Training Step - update on-device key
+            metrics, step_rng_key = train_step(
                 model, 
                 optimizer, 
                 latents,
                 batch_labels,
-                rng_manager.next(), 
+                step_rng_key, 
                 use_bf16=use_bf16
             )
             

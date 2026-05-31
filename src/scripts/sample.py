@@ -38,23 +38,45 @@ def main(_):
     # 2. Load config and build the matching model
     config = load_config(FLAGS.config)
     label_mode = getattr(config.model, "label_mode", "class")
-    label_dim = getattr(config.model, "label_dim", None)
-    
-    # Initialize Model (Architecture must match training)
-    model = DiT(
-        input_size=config.model.input_size,
-        patch_size=config.model.patch_size,
-        in_channels=config.model.in_channels,
-        hidden_size=config.model.hidden_size,
-        depth=config.model.depth,
-        num_heads=config.model.num_heads,
-        num_classes=config.model.num_classes,
-        label_mode=label_mode,
-        label_dim=label_dim,
-        learn_sigma=config.model.get("learn_sigma", False),
-        rngs=nnx.Rngs(rng_manager.next())
-    )
-    
+    from src.models.dit.dit import DiT
+    from src.models.unet.unet import UNetModel
+    from src.training.sampler import DDIMSampler
+    ...
+        # Initialize Model (Architecture must match training)
+        model_type = config.model.get("type", "dit")
+        if model_type == "dit":
+            model = DiT(
+                input_size=config.model.input_size,
+                patch_size=config.model.patch_size,
+                in_channels=config.model.in_channels,
+                hidden_size=config.model.hidden_size,
+                depth=config.model.depth,
+                num_heads=config.model.num_heads,
+                num_classes=config.model.num_classes,
+                label_mode=label_mode,
+                label_dim=label_dim,
+                learn_sigma=config.model.get("learn_sigma", False),
+                rngs=nnx.Rngs(rng_manager.next())
+            )
+        elif model_type == "unet":
+            model = UNetModel(
+                in_channels=config.model.in_channels,
+                out_channels=config.model.get("out_channels", config.model.in_channels),
+                model_channels=config.model.model_channels,
+                attention_resolutions=config.model.attention_resolutions,
+                num_res_blocks=config.model.num_res_blocks,
+                channel_mult=config.model.channel_mult,
+                num_heads=config.model.num_heads,
+                transformer_depth=config.model.get("transformer_depth", 1),
+                context_dim=config.model.get("context_dim", None),
+                num_classes=config.model.num_classes,
+                label_mode=label_mode,
+                label_dim=label_dim,
+                rngs=nnx.Rngs(rng_manager.next())
+            )
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+
     # 3. Load Checkpoint
     if FLAGS.checkpoint:
         checkpointer = CheckpointManager(os.path.dirname(FLAGS.checkpoint))

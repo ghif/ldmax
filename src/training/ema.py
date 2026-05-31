@@ -1,6 +1,7 @@
 """EMA weight tracking utilities."""
 
 import jax
+import jax.numpy as jnp
 from flax import nnx
 from typing import Any
 
@@ -21,11 +22,12 @@ class EMAManager:
     @staticmethod
     @jax.jit
     def _ema_update(ema_state, current_state, decay):
-        return jax.tree.map(
-            lambda e, c: decay * e + (1.0 - decay) * c if isinstance(c, jax.Array) else c,
-            ema_state,
-            current_state
-        )
+        def update_fn(e, c):
+            # Only update floating point parameters, skip keys or ints
+            if isinstance(c, jax.Array) and jnp.issubdtype(c.dtype, jnp.floating):
+                return decay * e + (1.0 - decay) * c
+            return c
+        return jax.tree.map(update_fn, ema_state, current_state)
 
     def update(self, model: nnx.Module):
         """Update EMA weights.

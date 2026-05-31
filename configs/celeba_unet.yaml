@@ -1,20 +1,25 @@
 dataset: "celeba"
 
 model:
+  type: "unet"
   input_size: 32
-  patch_size: 2
   in_channels: 4
-  hidden_size: 384
-  depth: 12
-  num_heads: 6
+  out_channels: 4
+  model_channels: 128
+  attention_resolutions: [4, 2, 1]
+  num_res_blocks: 2
+  channel_mult: [1, 2, 2, 2]
+  num_heads: 8
+  transformer_depth: 1
+  context_dim: 128 # For attribute conditioning
   num_classes: 40
   label_mode: "attributes"
   label_dim: 40
 
 training:
-  learning_rate: 0.0002
+  learning_rate: 0.0001
   weight_decay: 0.01
-  batch_size: 128
+  batch_size: 256
   total_steps: 500000
   seed: 42
   ema_decay: 0.9999
