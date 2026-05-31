@@ -2,14 +2,16 @@
 
 import grain.python as grain
 import numpy as np
-from typing import Mapping, Any
+from typing import Mapping, Any, Optional
 from datasets import load_dataset
+from PIL import Image
 
 class HFDataSource:
     """A Grain-compatible data source wrapping a Hugging Face dataset."""
     
-    def __init__(self, dataset):
+    def __init__(self, dataset, target_size: Optional[int] = None):
         self.dataset = dataset
+        self.target_size = target_size
         
     def __len__(self):
         return len(self.dataset)
@@ -17,8 +19,14 @@ class HFDataSource:
     def __getitem__(self, idx):
         # Hugging Face returns a PIL image for CIFAR-10 in 'img' column
         item = self.dataset[idx]
+        img = item['img']
+        
+        # Optional resize
+        if self.target_size is not None:
+            img = img.resize((self.target_size, self.target_size), Image.LANCZOS)
+            
         # Convert PIL Image to numpy array (H, W, C), scale to [-1, 1]
-        img_np = np.array(item['img'], dtype=np.float32)
+        img_np = np.array(img, dtype=np.float32)
         img_normalized = (img_np / 127.5) - 1.0
         
         return {
@@ -30,7 +38,8 @@ def get_cifar10_dataset(
     batch_size: int,
     split: str = "train",
     shuffle: bool = True,
-    seed: int = 0
+    seed: int = 0,
+    target_size: Optional[int] = None
 ) -> grain.DataLoader:
     """Initialize the CIFAR-10 data loader using Grain.
 
@@ -39,13 +48,14 @@ def get_cifar10_dataset(
         split: Dataset split ('train' or 'test').
         shuffle: Whether to shuffle the data.
         seed: Random seed for shuffling.
+        target_size: Optional resolution to resize images to.
 
     Returns:
         A Grain DataLoader instance.
     """
     # Load real CIFAR-10 dataset from Hugging Face
     hf_dataset = load_dataset("uoft-cs/cifar10", split=split)
-    source = HFDataSource(hf_dataset)
+    source = HFDataSource(hf_dataset, target_size=target_size)
     
     transformations = [
         grain.Batch(batch_size=batch_size, drop_remainder=True)

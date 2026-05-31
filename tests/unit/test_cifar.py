@@ -23,6 +23,15 @@ def test_cifar10_loader_shapes():
     assert np.min(batch["image"]) >= -1.1
     assert np.max(batch["image"]) <= 1.1
 
+def test_cifar10_loader_resizing():
+    """Test that the CIFAR-10 loader correctly resizes images."""
+    batch_size = 2
+    target_size = 64
+    loader = get_cifar10_dataset(batch_size=batch_size, shuffle=False, target_size=target_size)
+    
+    batch = next(iter(loader))
+    assert batch["image"].shape == (batch_size, target_size, target_size, 3)
+
 def test_visualize_cifar10():
     """Load a batch of CIFAR-10 images and save them to a file for manual verification."""
     batch_size = 16

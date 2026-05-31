@@ -61,20 +61,26 @@ def test_vae_reconstruction(vae_manager):
     assert mse < 0.05
 
 def test_vae_cifar10_visualization(vae_manager):
-    """Test VAE encoding/decoding on real CIFAR-10 data and save visualization."""
+    """Test VAE encoding/decoding on real CIFAR-10 data and save visualization.
+    
+    Targeting 16x16 latent space requires 128x128 input images (8x downsampling).
+    """
     batch_size = 4
-    loader = get_cifar10_dataset(batch_size=batch_size, shuffle=True, seed=42)
+    target_size = 128 # 16 * 8
+    loader = get_cifar10_dataset(batch_size=batch_size, shuffle=True, seed=42, target_size=target_size)
     
     # Get a batch
     batch = next(iter(loader))
-    images = batch["image"] # (B, 32, 32, 3), range [-1, 1]
+    images = batch["image"] # (B, 128, 128, 3), range [-1, 1]
     
     # Encode
     key = jax.random.PRNGKey(0)
-    latents = vae_manager.encode(images, key) # (B, 4, 4, 4)
+    latents = vae_manager.encode(images, key) # (B, 16, 16, 4)
+    
+    assert latents.shape == (batch_size, 16, 16, 4), f"Expected (B, 16, 16, 4), got {latents.shape}"
     
     # Decode
-    reconstructed = vae_manager.decode(latents) # (B, 32, 32, 3), range [0, 1]
+    reconstructed = vae_manager.decode(latents) # (B, 128, 128, 3), range [0, 1]
     
     # Process for visualization
     # 1. Original images: [-1, 1] -> [0, 1]
