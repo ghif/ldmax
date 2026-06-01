@@ -16,8 +16,12 @@ class EMAManager:
             decay: EMA decay rate.
         """
         self.decay = decay
-        # Get a snapshot of the model state for EMA
-        self.ema_state = nnx.state(model)
+        # Get a snapshot of the model state for EMA.
+        # Always track EMA in float32 to avoid precision issues with bfloat16 decay constants.
+        self.ema_state = jax.tree.map(
+            lambda x: x.astype(jnp.float32) if isinstance(x, jax.Array) and jnp.issubdtype(x.dtype, jnp.floating) else x,
+            nnx.state(model)
+        )
 
     @staticmethod
     @jax.jit
@@ -25,7 +29,8 @@ class EMAManager:
         def update_fn(e, c):
             # Only update floating point parameters, skip keys or ints
             if isinstance(c, jax.Array) and jnp.issubdtype(c.dtype, jnp.floating):
-                return decay * e + (1.0 - decay) * c
+                # Ensure computation and state remain in float32 even if model is bf16
+                return decay * e + (1.0 - decay) * c.astype(jnp.float32)
             return c
         return jax.tree.map(update_fn, ema_state, current_state)
 
