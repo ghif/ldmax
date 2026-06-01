@@ -1,3 +1,1 @@
-nohup python -m src.scripts.train \
-  --config configs/celeba_tpu_b128.yaml \
-  --output_dir ./outputs/celeba_tpu_b128 > train_celeba_tpu_b128.log 2>&1 &
+nohup python -m src.scripts.train --config configs/celeba_tpu_b256.yaml --output_dir ./outputs/celeba_tpu_b256_opt > train_celeba_tpu_b256_opt.log 2>&1 &

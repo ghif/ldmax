@@ -67,7 +67,7 @@ def train_step(
     labels: jax.Array,
     rng_key: jax.Array,
     use_bf16: bool = False
-) -> Tuple[Dict[str, jax.Array], jax.Array]:
+) -> Dict[str, jax.Array]:
     """Perform a single training step on latents.
 
     Args:
@@ -79,18 +79,15 @@ def train_step(
         use_bf16: Whether to use bfloat16 mixed precision.
 
     Returns:
-        Tuple of (Dictionary of metrics, next_rng_key).
+        Dictionary of metrics (e.g., loss).
     """
-    # Split key on device to avoid host-device communication overhead
-    step_key, next_rng_key = jax.random.split(rng_key)
-
     if use_bf16:
         latents = latents.astype(jnp.bfloat16)
 
     def loss_fn(model):
-        return compute_loss(model, latents, labels, step_key)
+        return compute_loss(model, latents, labels, rng_key)
 
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     optimizer.update(model, grads)
     
-    return {"loss": loss}, next_rng_key
+    return {"loss": loss}

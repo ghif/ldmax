@@ -57,8 +57,7 @@ def main(_):
         # Jitted VAE encoding
         @jax.jit
         def encode_fn(images, key):
-            encode_key, next_key = jax.random.split(key)
-            return vae_manager.encode(images, encode_key), next_key
+            return vae_manager.encode(images, key)
 
         # 3. Initialize Model and Optimizer
         model_type = config.model.get("type", "dit")
@@ -193,10 +192,6 @@ def main(_):
         # 5. Training Loop
         print(f"Starting training for {config.training.total_steps} steps...")
         
-        # Maintain RNG state on device to avoid host-device communication overhead
-        step_rng_key = jax.device_put(rng_manager.next(), replicate_sharding)
-        encode_rng_key = jax.device_put(rng_manager.next(), replicate_sharding)
-
         # Simple training loop
         for step in tqdm(range(config.training.total_steps)):
             batch = next(dataset_iter)
@@ -205,16 +200,16 @@ def main(_):
             batch_images = batch["image"]
             batch_labels = batch["label"]
             
-            # 1. VAE Encoding (latents) - update on-device key
-            latents, encode_rng_key = encode_fn(batch_images, encode_rng_key)
+            # 1. VAE Encoding (latents)
+            latents = encode_fn(batch_images, rng_manager.next())
             
-            # 2. Training Step - update on-device key
-            metrics, step_rng_key = train_step(
+            # 2. Training Step
+            metrics = train_step(
                 model, 
                 optimizer, 
                 latents,
                 batch_labels,
-                step_rng_key, 
+                rng_manager.next(), 
                 use_bf16=use_bf16
             )
             
@@ -270,7 +265,7 @@ def main(_):
             if (step % config.evaluation.checkpoint_interval == 0 and step > 0) or (step == config.training.total_steps - 1):
                 checkpointer.save(step, {
                     "model": nnx.state(model),
-                    "ema": ema.state if ema is not None else None,
+                    "ema": ema.ema_state if ema is not None else None,
                     "opt": nnx.state(optimizer),
                     "step": step
                 })
