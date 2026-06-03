@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from src.models.dit.dit import DiT
+from src.models.unet.unet import UNetModel
 from src.training.sampler import DDIMSampler
 from src.utils.checkpoint import CheckpointManager
 from src.utils.vae import VAEManager
@@ -37,45 +38,47 @@ def main(_):
 
     # 2. Load config and build the matching model
     config = load_config(FLAGS.config)
+    use_vae = config.model.get("use_vae", True)
     label_mode = getattr(config.model, "label_mode", "class")
-    from src.models.dit.dit import DiT
-    from src.models.unet.unet import UNetModel
-    from src.training.sampler import DDIMSampler
-    ...
-        # Initialize Model (Architecture must match training)
-        model_type = config.model.get("type", "dit")
-        if model_type == "dit":
-            model = DiT(
-                input_size=config.model.input_size,
-                patch_size=config.model.patch_size,
-                in_channels=config.model.in_channels,
-                hidden_size=config.model.hidden_size,
-                depth=config.model.depth,
-                num_heads=config.model.num_heads,
-                num_classes=config.model.num_classes,
-                label_mode=label_mode,
-                label_dim=label_dim,
-                learn_sigma=config.model.get("learn_sigma", False),
-                rngs=nnx.Rngs(rng_manager.next())
-            )
-        elif model_type == "unet":
-            model = UNetModel(
-                in_channels=config.model.in_channels,
-                out_channels=config.model.get("out_channels", config.model.in_channels),
-                model_channels=config.model.model_channels,
-                attention_resolutions=config.model.attention_resolutions,
-                num_res_blocks=config.model.num_res_blocks,
-                channel_mult=config.model.channel_mult,
-                num_heads=config.model.num_heads,
-                transformer_depth=config.model.get("transformer_depth", 1),
-                context_dim=config.model.get("context_dim", None),
-                num_classes=config.model.num_classes,
-                label_mode=label_mode,
-                label_dim=label_dim,
-                rngs=nnx.Rngs(rng_manager.next())
-            )
-        else:
-            raise ValueError(f"Unknown model type: {model_type}")
+    label_dim = getattr(config.model, "label_dim", None)
+    if label_mode == "attribute" and label_dim is None:
+        from src.data.celeba import CELEBA_ATTRIBUTE_NAMES
+        label_dim = len(CELEBA_ATTRIBUTE_NAMES)
+
+    # Initialize Model (Architecture must match training)
+    model_type = config.model.get("type", "dit")
+    if model_type == "dit":
+        model = DiT(
+            input_size=config.model.input_size,
+            patch_size=config.model.patch_size,
+            in_channels=config.model.in_channels,
+            hidden_size=config.model.hidden_size,
+            depth=config.model.depth,
+            num_heads=config.model.num_heads,
+            num_classes=config.model.num_classes,
+            label_mode=label_mode,
+            label_dim=label_dim,
+            learn_sigma=config.model.get("learn_sigma", False),
+            rngs=nnx.Rngs(rng_manager.next())
+        )
+    elif model_type == "unet":
+        model = UNetModel(
+            in_channels=config.model.in_channels,
+            out_channels=config.model.get("out_channels", config.model.in_channels),
+            model_channels=config.model.model_channels,
+            attention_resolutions=config.model.attention_resolutions,
+            num_res_blocks=config.model.num_res_blocks,
+            channel_mult=config.model.channel_mult,
+            num_heads=config.model.num_heads,
+            transformer_depth=config.model.get("transformer_depth", 1),
+            context_dim=config.model.get("context_dim", None),
+            num_classes=config.model.num_classes,
+            label_mode=label_mode,
+            label_dim=label_dim,
+            rngs=nnx.Rngs(rng_manager.next())
+        )
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
 
     # 3. Load Checkpoint
     if FLAGS.checkpoint:
@@ -89,7 +92,7 @@ def main(_):
 
     # 4. Sample
     sampler = DDIMSampler()
-    vae_manager = VAEManager()
+    vae_manager = VAEManager() if use_vae else None
     
     @nnx.jit
     def model_fn(x, t, y):
@@ -135,7 +138,10 @@ def main(_):
     )
 
     # Decode from latent space back to pixel space for visualization.
-    samples = vae_manager.decode(samples)
+    if use_vae:
+        samples = vae_manager.decode(samples)
+    else:
+        samples = (samples / 2 + 0.5).clip(0, 1)
     
     # 5. Save Grid
     grid_size = int(math.ceil(FLAGS.num_samples ** 0.5))

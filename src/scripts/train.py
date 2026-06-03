@@ -43,21 +43,25 @@ def main(_):
         os.makedirs(FLAGS.output_dir, exist_ok=True)
         
         use_bf16 = config.training.get("mixed_precision", False)
+        use_vae = config.model.get("use_vae", True)
         
         # 2. Setup RNG, Logger, Checkpointer, VAE, Sampler
         rng_manager = RNGManager(config.training.seed)
         logger = TensorBoardLogger(os.path.join(FLAGS.output_dir, "logs"))
         checkpointer = CheckpointManager(os.path.join(FLAGS.output_dir, "checkpoints"))
         sampler = DDIMSampler()
-        vae_manager = VAEManager()
+        vae_manager = VAEManager() if use_vae else None
         
-        # Replicate VAE parameters across all devices
-        vae_manager.params = jax.device_put(vae_manager.params, replicate_sharding)
+        if use_vae:
+            # Replicate VAE parameters across all devices
+            vae_manager.params = jax.device_put(vae_manager.params, replicate_sharding)
         
         # Jitted VAE encoding
         @jax.jit
         def encode_fn(images, key):
-            return vae_manager.encode(images, key)
+            if use_vae:
+                return vae_manager.encode(images, key)
+            return images
 
         # 3. Initialize Model and Optimizer
         model_type = config.model.get("type", "dit")
@@ -258,7 +262,10 @@ def main(_):
                 )
                 
                 # Decode samples back to pixel space for visualization
-                samples_pixel = vae_manager.decode(samples)
+                if use_vae:
+                    samples_pixel = vae_manager.decode(samples)
+                else:
+                    samples_pixel = (samples / 2 + 0.5).clip(0, 1)
                 logger.log_images(step, "train/samples", samples_pixel[:num_samples])
 
             # Checkpointing
