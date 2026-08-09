@@ -31,13 +31,13 @@ LDMAX adheres to five foundational tenets:
 conda create -n ldmax python=3.11 -y
 conda activate ldmax
 
-# 2. Install the JAX runtime for the target accelerator.
-#    Use the official JAX installation instructions for your CPU, GPU, or TPU.
-#    A single local GPU/TPU is selected automatically by this training path.
-python -m pip install "jax[cpu]"  # Replace with the matching GPU/TPU runtime.
+# 2. Install dependencies for your target accelerator.
+#    Choose one: requirements_cpu.txt, requirements_gpu.txt, or requirements_tpu.txt.
+pip install -r requirements_cpu.txt
 
-# 3. Install remaining dependencies
-pip install -r requirements.txt
+# 3. For GPU or TPU, replace the previous command with the matching file:
+# pip install -r requirements_gpu.txt
+# pip install -r requirements_tpu.txt
 ```
 
 The Fashion MNIST runner is single-device and does not require a mesh, Grain,

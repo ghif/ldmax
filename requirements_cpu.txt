@@ -1,6 +1,7 @@
-# JAX Ecosystem
-# Install the accelerator-specific JAX runtime (CPU/GPU/TPU) before this file.
+# CPU JAX runtime
 jax
+
+# JAX ecosystem
 flax
 grain
 optax

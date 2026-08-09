@@ -42,6 +42,10 @@ class TensorBoardLogger:
             images = np.asarray(images)
         self.writer.add_images(name, images, step, dataformats="NHWC")
 
+    def flush(self):
+        """Flush pending TensorBoard events to the local event file."""
+        self.writer.flush()
+
     def close(self):
         """Close the writer."""
         self.writer.close()

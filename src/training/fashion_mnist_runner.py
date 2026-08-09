@@ -58,6 +58,10 @@ def main(_):
     checkpointer = CheckpointManager(
         os.path.join(FLAGS.output_dir, "checkpoints"),
         gcs_directory="gs://diffjax/models",
+        artifact_paths=[
+            os.path.join(FLAGS.output_dir, "logs"),
+            os.path.join(FLAGS.output_dir, "train_logs.txt"),
+        ],
     )
     sample_artifact_dir = os.path.join(FLAGS.output_dir, "checkpoints", "samples")
     os.makedirs(sample_artifact_dir, exist_ok=True)
@@ -96,8 +100,8 @@ def main(_):
     sampler = DDIMSampler()
 
     @nnx.jit
-    def model_fn(x, t, y):
-        output = sampling_model(x, t, y)
+    def model_fn(model, x, t, y):
+        output = model(x, t, y)
         if output.shape[-1] == x.shape[-1] * 2:
             return jnp.split(output, 2, axis=-1)[0]
         return output
@@ -125,16 +129,16 @@ def main(_):
 
     trainlog_path = os.path.join(FLAGS.output_dir, "train_logs.txt")
     trainlog = open(trainlog_path, "w", encoding="utf-8")
-    trainlog.write(
-        "step train_loss validation_loss train_step_sec train_steps_per_sec "
-        "train_samples_per_sec validation_step_sec validation_steps_per_sec "
-        "validation_samples_per_sec elapsed_sec\n"
-    )
-    trainlog.flush()
 
-    print(f"Using device: {jax.devices()[0]}")
-    print("Training directly on 28x28x1 pixels; no VAE is used.")
-    print(f"Starting training for {config.training.total_steps} steps...")
+    def emit(message: str) -> None:
+        """Write the same human-readable message to the terminal and log file."""
+        print(message, flush=True)
+        trainlog.write(message + "\n")
+        trainlog.flush()
+
+    emit(f"Using device: {jax.devices()[0]}")
+    emit("Training directly on 28x28x1 pixels; no VAE is used.")
+    emit(f"Starting training for {config.training.total_steps} steps...")
     training_start = time.perf_counter()
 
     try:
@@ -186,15 +190,9 @@ def main(_):
                         "performance/validation_samples_per_sec": validation_samples_per_sec,
                     },
                 )
-                trainlog.write(
-                    f"{step} {loss:.6f} {validation_loss:.6f} "
-                    f"{train_step_duration:.6f} {train_steps_per_sec:.6f} "
-                    f"{train_samples_per_sec:.6f} {validation_step_duration:.6f} "
-                    f"{validation_steps_per_sec:.6f} {validation_samples_per_sec:.6f} "
-                    f"{elapsed_sec:.6f}\n"
-                )
-                trainlog.flush()
-                print(
+                logger.flush()
+                checkpointer.sync_to_gcs()
+                emit(
                     f"step={step + 1:05d}/{config.training.total_steps:05d} "
                     f"progress={progress_percent:.2f}% train_loss={loss:.6f} "
                     f"validation_loss={validation_loss:.6f} "
@@ -213,7 +211,7 @@ def main(_):
                 labels = jnp.arange(sample_count, dtype=jnp.int32) % config.model.num_classes
                 null_labels = jnp.full_like(labels, config.model.num_classes)
                 samples = sampler.sample(
-                    model_fn,
+                    lambda x, t, y: model_fn(sampling_model, x, t, y),
                     (
                         sample_count,
                         config.model.input_size,
@@ -232,14 +230,15 @@ def main(_):
                     sample_images,
                     os.path.join(sample_artifact_dir, f"samples_step_{step:06d}.png"),
                 )
+                logger.flush()
+                checkpointer.sync_to_gcs()
 
             if step % config.evaluation.checkpoint_interval == 0 and step > 0:
                 checkpointer.save(
                     step,
                     {"model": nnx.state(model), "ema": ema.ema_state, "opt": nnx.state(optimizer)},
                 )
+        emit("Training complete.")
     finally:
         logger.close()
         trainlog.close()
-
-    print("Training complete.")

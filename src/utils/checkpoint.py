@@ -11,7 +11,13 @@ import orbax.checkpoint as ocp
 class CheckpointManager:
     """Manages local Orbax checkpoints and optional GCS synchronization."""
 
-    def __init__(self, directory: str, max_to_keep: int = 5, gcs_directory: str | None = None):
+    def __init__(
+        self,
+        directory: str,
+        max_to_keep: int = 5,
+        gcs_directory: str | None = None,
+        artifact_paths: list[str] | None = None,
+    ):
         """Initialize the checkpoint manager.
 
         Args:
@@ -21,6 +27,7 @@ class CheckpointManager:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.gcs_directory = gcs_directory
+        self.artifact_paths = [Path(path) for path in artifact_paths or []]
         
         # Initialize checkpointer
         options = ocp.CheckpointManagerOptions(
@@ -55,15 +62,22 @@ class CheckpointManager:
         if parsed.scheme != "gs" or not parsed.netloc:
             raise ValueError("gcs_directory must be a GCS URL such as 'gs://diffjax/models'")
 
-        run_name = self.directory.parent.name
-        checkpoint_name = self.directory.name
-        prefix_parts = [parsed.path.strip("/"), run_name, checkpoint_name]
-        remote_prefix = "/".join(part for part in prefix_parts if part)
+        run_root = self.directory.parent
+        run_name = run_root.name
+        remote_prefix = "/".join(part for part in [parsed.path.strip("/"), run_name] if part)
         bucket = storage.Client().bucket(parsed.netloc)
 
-        for path in sorted(self.directory.rglob("*")):
-            if path.is_file():
-                relative_path = path.relative_to(self.directory).as_posix()
+        paths_to_sync = [self.directory, *self.artifact_paths]
+        for root in paths_to_sync:
+            if root.is_file():
+                files = [root]
+            elif root.is_dir():
+                files = [path for path in sorted(root.rglob("*")) if path.is_file()]
+            else:
+                continue
+
+            for path in files:
+                relative_path = path.relative_to(run_root).as_posix()
                 bucket.blob(f"{remote_prefix}/{relative_path}").upload_from_filename(str(path))
 
     def restore(self, step: int = None, items: Any = None, partial_restore: bool = True) -> Any:

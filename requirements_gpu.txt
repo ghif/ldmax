@@ -1,5 +1,6 @@
-# Google Cloud TPU JAX runtime
-jax[tpu]
+# NVIDIA GPU JAX runtime (CUDA 13)
+jax[cuda13]
+# For CUDA 12 instead, use: jax[cuda12]
 
 # JAX ecosystem
 flax
