@@ -2,7 +2,7 @@
 
 import os
 import time
-from absl import app, flags
+from absl import flags
 from flax import nnx
 import optax
 import jax
@@ -272,6 +272,3 @@ def main(_):
             
     logger.close()
     print("Training complete.")
-
-if __name__ == "__main__":
-    app.run(main)

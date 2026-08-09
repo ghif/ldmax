@@ -40,28 +40,54 @@ pip install -r requirements.txt
 
 ## 🏃‍♂️ Quickstart
 
-### 1. Training
+### Training
 
 LDMAX supports training in the latent space for multiple datasets:
 
-**CIFAR-10 ($32 \times 32 \to 4 \times 4$ latents):**
+**Fashion MNIST raw-pixel diffusion:**
+
+This path trains DiT directly on `28 × 28 × 1` grayscale images. It does not
+load or call the latent VAE encoder or decoder.
+
 ```bash
 export PYTHONPATH=$PYTHONPATH:.
-python -m src.scripts.train --config configs/cifar10.yaml --output_dir ./outputs/cifar
+python -m scripts.train_fashion_mnist \
+    --config configs/fashion_mnist.yaml \
+    --output_dir ./outputs/fashion_mnist
+```
+
+For a two-step smoke run, use `configs/fashion_mnist_test.yaml`.
+
+To sample from a saved Fashion MNIST checkpoint and write a grayscale image
+grid:
+
+```bash
+export PYTHONPATH=$PYTHONPATH:.
+python -m scripts.sample_fashion_mnist \
+    --config configs/fashion_mnist.yaml \
+    --checkpoint ./outputs/fashion_mnist/checkpoints/1000 \
+    --num_samples 16 \
+    --output_path ./samples/fashion_mnist.png
+```
+
+**CIFAR-10 ($128 \times 128 \to 16 \times 16$ latents):**
+```bash
+export PYTHONPATH=$PYTHONPATH:.
+python -m scripts.train --config configs/cifar10.yaml --output_dir ./outputs/cifar
 ```
 
 **CelebA ($256 \times 256 \to 32 \times 32$ latents):**
 ```bash
 export PYTHONPATH=$PYTHONPATH:.
-python -m src.scripts.train --config configs/celeba.yaml --output_dir ./outputs/celeba
+python -m scripts.train --config configs/celeba.yaml --output_dir ./outputs/celeba
 ```
 
 **CelebA TPU v6e batch sweep:**
 ```bash
 export PYTHONPATH=$PYTHONPATH:.
-python -m src.scripts.train --config configs/celeba_tpu_b128.yaml --output_dir ./outputs/celeba_b128
-python -m src.scripts.train --config configs/celeba_tpu_b256.yaml --output_dir ./outputs/celeba_b256
-python -m src.scripts.train --config configs/celeba_tpu_b384.yaml --output_dir ./outputs/celeba_b384
+python -m scripts.train --config configs/celeba_tpu_b128.yaml --output_dir ./outputs/celeba_b128
+python -m scripts.train --config configs/celeba_tpu_b256.yaml --output_dir ./outputs/celeba_b256
+python -m scripts.train --config configs/celeba_tpu_b384.yaml --output_dir ./outputs/celeba_b384
 ```
 Use the run with the best samples/sec and stable loss as the final CelebA TPU configuration.
 
@@ -77,7 +103,7 @@ tensorboard --logdir ./outputs
 Generate high-quality samples from a saved checkpoint:
 ```bash
 export PYTHONPATH=$PYTHONPATH:.
-python -m src.scripts.sample \
+python -m scripts.sample \
     --checkpoint ./outputs/celeba/checkpoints/50000 \
     --num_samples 16 \
     --num_steps 50 \
@@ -92,7 +118,7 @@ src/
 ├── data/               # Dataset loaders (CIFAR, CelebA) via Grain
 ├── training/           # Shared training steps, samplers, and EMA
 ├── utils/              # VAE, Checkpointing (Orbax), Logging, RNG
-└── scripts/            # CLI entry points for train/sample
+└── scripts/            # Thin CLI launchers only
 tests/                  # Unit & Integration tests
 configs/                # YAML experiment definitions
 ```

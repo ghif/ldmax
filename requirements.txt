@@ -4,14 +4,27 @@ flax
 grain
 optax
 orbax-checkpoint
+
+# CLI, configuration, and numerical/runtime utilities
+absl-py
+numpy
+pyyaml
+pillow
+tqdm
+
+# Logging and visualization
 tensorboard
 tensorboardX
-huggingface_hub
+matplotlib
+
+# Hugging Face and model serialization
+huggingface_hub>=1.5.0
 diffusers
 transformers
-jax-fid
+safetensors
+
+# Data, configuration, and development
 ml_collections
-datasets
+datasets>=5.0.1
 pytest
 ruff
-matplotlib

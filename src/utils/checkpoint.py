@@ -41,11 +41,13 @@ class CheckpointManager:
         """
         self.manager.save(step, state)
 
-    def restore(self, step: int = None) -> Any:
+    def restore(self, step: int = None, items: Any = None, partial_restore: bool = True) -> Any:
         """Restore state from a checkpoint.
 
         Args:
             step: Specific step to restore. If None, restores latest.
+            items: A template (e.g. state dictionary) to guide restoration.
+            partial_restore: Whether to allow partial restoration if structures mismatch.
 
         Returns:
             The restored PyTree.
@@ -56,7 +58,7 @@ class CheckpointManager:
         if step is None:
             return None
             
-        return self.manager.restore(step)
+        return self.manager.restore(step, items=items, restore_kwargs={'partial_restore': partial_restore})
 
     def latest_step(self) -> int:
         """Get the latest checkpoint step."""
