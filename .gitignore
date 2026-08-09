@@ -149,6 +149,7 @@ tpu/
 
 # Orbax/Checkpoints
 checkpoints/
+models/
 outputs/
 logs/
 samples/

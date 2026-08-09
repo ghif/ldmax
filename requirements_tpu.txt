@@ -2,6 +2,7 @@ flax
 grain
 optax
 orbax-checkpoint
+google-cloud-storage
 tensorboard
 tensorboardX
 huggingface_hub

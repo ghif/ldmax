@@ -47,7 +47,10 @@ def main(_):
         # 2. Setup RNG, Logger, Checkpointer, VAE, Sampler
         rng_manager = RNGManager(config.training.seed)
         logger = TensorBoardLogger(os.path.join(FLAGS.output_dir, "logs"))
-        checkpointer = CheckpointManager(os.path.join(FLAGS.output_dir, "checkpoints"))
+        checkpointer = CheckpointManager(
+            os.path.join(FLAGS.output_dir, "checkpoints"),
+            gcs_directory="gs://diffjax/models",
+        )
         sampler = DDIMSampler()
         vae_manager = VAEManager()
         

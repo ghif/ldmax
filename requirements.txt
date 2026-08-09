@@ -1,5 +1,6 @@
 # JAX Ecosystem
-jax[cpu]
+# Install the accelerator-specific JAX runtime (CPU/GPU/TPU) before this file.
+jax
 flax
 grain
 optax
@@ -19,6 +20,7 @@ matplotlib
 
 # Hugging Face and model serialization
 huggingface_hub>=1.5.0
+google-cloud-storage
 diffusers
 transformers
 safetensors

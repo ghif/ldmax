@@ -31,12 +31,20 @@ LDMAX adheres to five foundational tenets:
 conda create -n ldmax python=3.11 -y
 conda activate ldmax
 
-# 2. Install JAX (Modify based on hardware: CPU/GPU/TPU)
-conda install -y -c conda-forge jax jaxlib flax optax
+# 2. Install the JAX runtime for the target accelerator.
+#    Use the official JAX installation instructions for your CPU, GPU, or TPU.
+#    A single local GPU/TPU is selected automatically by this training path.
+python -m pip install "jax[cpu]"  # Replace with the matching GPU/TPU runtime.
 
 # 3. Install remaining dependencies
 pip install -r requirements.txt
 ```
+
+The Fashion MNIST runner is single-device and does not require a mesh, Grain,
+or accelerator-specific model code. With one visible local device, JAX places
+the model and computations on that device automatically. Select the backend
+through the JAX installation and runtime environment, for example with
+`JAX_PLATFORMS=cpu` when explicitly testing CPU execution.
 
 ## 🏃‍♂️ Quickstart
 
@@ -47,7 +55,10 @@ LDMAX supports training in the latent space for multiple datasets:
 **Fashion MNIST raw-pixel diffusion:**
 
 This path trains DiT directly on `28 × 28 × 1` grayscale images. It does not
-load or call the latent VAE encoder or decoder.
+load or call the latent VAE encoder or decoder. To keep the introductory data
+path easy to follow, it uses Hugging Face Datasets with simple NumPy batching;
+the larger CIFAR-10 and CelebA pipelines use Grain for higher-throughput data
+loading and sharding.
 
 ```bash
 export PYTHONPATH=$PYTHONPATH:.

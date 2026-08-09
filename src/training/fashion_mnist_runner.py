@@ -55,7 +55,10 @@ def main(_):
 
     rng = RNGManager(config.training.seed)
     logger = TensorBoardLogger(os.path.join(FLAGS.output_dir, "logs"))
-    checkpointer = CheckpointManager(os.path.join(FLAGS.output_dir, "checkpoints"))
+    checkpointer = CheckpointManager(
+        os.path.join(FLAGS.output_dir, "checkpoints"),
+        gcs_directory="gs://diffjax/models",
+    )
     sample_artifact_dir = os.path.join(FLAGS.output_dir, "checkpoints", "samples")
     os.makedirs(sample_artifact_dir, exist_ok=True)
 
