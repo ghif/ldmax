@@ -1,0 +1,31 @@
+# Raw-pixel Fashion MNIST DiT example. No VAE is involved.
+dataset: "fashion_mnist"
+
+model:
+  input_size: 28
+  patch_size: 2
+  in_channels: 1
+  hidden_size: 128
+  depth: 4
+  num_heads: 4
+  num_classes: 10
+  learn_sigma: false
+
+training:
+  learning_rate: 0.0002
+  weight_decay: 0.01
+  batch_size: 128
+  total_steps: 50000
+  seed: 42
+  ema_decay: 0.999
+
+data:
+  dataset_name: "gs://diffjax/datasets/fashion-mnist/huggingface"
+
+evaluation:
+  log_interval: 50
+  checkpoint_interval: 1000
+  sampling_interval: 500
+  sample_count: 16
+  num_inference_steps: 50
+  cfg_scale: 1.5
