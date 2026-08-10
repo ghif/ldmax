@@ -7,6 +7,19 @@ from typing import Any, Optional, Tuple
 
 from src.models.dit.blocks import DiTBlock, FinalLayer
 
+
+def resolve_conditioning_mode(conditioning: str) -> str:
+    """Map a config conditioning value to the DiT label mode."""
+    if conditioning == "class":
+        return "class"
+    if conditioning == "unconditional":
+        return "none"
+    raise ValueError(
+        f"Unsupported conditioning mode: {conditioning!r}. "
+        "Expected 'class' or 'unconditional'."
+    )
+
+
 def get_2d_sincos_pos_embed(embed_dim, grid_size):
     """Create 2D sin-cos positional embeddings."""
     grid_h = jnp.arange(grid_size, dtype=jnp.float32)
@@ -78,6 +91,7 @@ class LabelEmbedder(nnx.Module):
         self.label_mode = label_mode
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
+        self.hidden_size = hidden_size
 
         if label_mode == "class":
             use_cfg_embedding = True  # always reserved for null label
@@ -94,11 +108,18 @@ class LabelEmbedder(nnx.Module):
             self.label_dim = label_dim
             self.proj = nnx.Linear(label_dim, hidden_size, rngs=rngs)
             self.embedding_table = None
+        elif label_mode == "none":
+            self.label_dim = None
+            self.proj = None
+            self.embedding_table = None
         else:
             raise ValueError(f"Unknown label_mode: {label_mode}")
 
     def __call__(self, labels: jax.Array, train: bool, rngs: Optional[nnx.Rngs] = None, force_drop_ids: Optional[jax.Array] = None) -> jax.Array:
         """Forward pass."""
+        if self.label_mode == "none":
+            return jnp.zeros((labels.shape[0], self.hidden_size), dtype=jnp.float32)
+
         if self.label_mode == "class":
             if train and self.dropout_prob > 0:
                 if rngs is None:
@@ -144,6 +165,7 @@ class DiT(nnx.Module):
         num_classes: int = 1000,
         label_mode: str = "class",
         label_dim: Optional[int] = None,
+        label_dropout_prob: float = 0.1,
         learn_sigma: bool = False,
         rngs: Optional[nnx.Rngs] = None,
     ):
@@ -161,7 +183,7 @@ class DiT(nnx.Module):
         self.y_embedder = LabelEmbedder(
             num_classes,
             hidden_size,
-            dropout_prob=0.1,
+            dropout_prob=label_dropout_prob,
             label_mode=label_mode,
             label_dim=label_dim,
             rngs=rngs,

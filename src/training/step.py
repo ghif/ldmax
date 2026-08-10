@@ -10,7 +10,8 @@ def compute_loss(
     model: Any, 
     latents: jax.Array,
     labels: jax.Array, 
-    key: jax.Array
+    key: jax.Array,
+    train: bool = True,
 ) -> jax.Array:
     """Compute the diffusion loss for a batch of latents.
 
@@ -19,6 +20,7 @@ def compute_loss(
         latents: Pre-encoded latent batch shape (B, H, W, C).
         labels: Class labels.
         key: PRNGKey for randomness.
+        train: Whether to enable classifier-free label dropout.
 
     Returns:
         Scalar MSE loss.
@@ -47,7 +49,12 @@ def compute_loss(
     noisy_latents = sqrt_alphas_cumprod * latents + sqrt_one_minus_alphas_cumprod * noise
     
     # 3. Predict noise with DiT
-    model_output = model(noisy_latents, t, labels, rngs=nnx.Rngs(model_key))
+    model_output = model(
+        noisy_latents,
+        t,
+        labels,
+        rngs=nnx.Rngs(model_key) if train else None,
+    )
     
     # If learn_sigma is True, model_output has 2*C channels. 
     # We take the first C channels for noise prediction.

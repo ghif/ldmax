@@ -10,7 +10,7 @@ from absl import flags
 from flax import nnx
 from PIL import Image
 
-from src.models.dit.dit import DiT
+from src.models.dit.dit import DiT, resolve_conditioning_mode
 from src.training.sampler import DDIMSampler
 from src.utils.checkpoint import CheckpointManager
 from src.utils.config import load_config
@@ -22,12 +22,13 @@ flags.DEFINE_string("config", "configs/fashion_mnist.yaml", "Training config use
 flags.DEFINE_string("checkpoint", "", "Checkpoint directory, for example outputs/fashion_mnist/checkpoints/1000.")
 flags.DEFINE_integer("num_samples", 16, "Number of images to generate.")
 flags.DEFINE_integer("num_inference_steps", 50, "Number of DDIM denoising steps.")
-flags.DEFINE_float("cfg_scale", 1.0, "Classifier-free guidance scale.")
+flags.DEFINE_float("cfg_scale", -1.0, "Override config classifier-free guidance scale.")
+flags.DEFINE_integer("class_id", -1, "Class ID 0-9, or -1 for all classes.")
 flags.DEFINE_integer("seed", 0, "Random seed for the initial noise.")
 flags.DEFINE_string("output_path", "./fashion_mnist_samples.png", "Path for the output image grid.")
 
 
-def _build_model(config, seed: int) -> DiT:
+def _build_model(config, seed: int, label_mode: str, label_dropout_prob: float) -> DiT:
     """Build the same model architecture used by the training runner."""
     rng = RNGManager(seed)
     return DiT(
@@ -38,6 +39,8 @@ def _build_model(config, seed: int) -> DiT:
         depth=config.model.depth,
         num_heads=config.model.num_heads,
         num_classes=config.model.num_classes,
+        label_mode=label_mode,
+        label_dropout_prob=label_dropout_prob,
         learn_sigma=config.model.get("learn_sigma", False),
         rngs=nnx.Rngs(rng.next()),
     )
@@ -91,7 +94,19 @@ def main(_):
         raise ValueError("--num_samples must be positive")
 
     config = load_config(FLAGS.config)
-    model = _build_model(config, FLAGS.seed)
+    conditioning = config.model.get("conditioning", "class")
+    label_mode = resolve_conditioning_mode(conditioning)
+    if FLAGS.class_id < -1 or FLAGS.class_id >= config.model.num_classes:
+        raise ValueError("--class_id must be -1 or a valid Fashion MNIST class ID (0-9)")
+    if conditioning == "unconditional" and FLAGS.class_id != -1:
+        raise ValueError("--class_id cannot be used when model.conditioning is 'unconditional'")
+
+    model = _build_model(
+        config,
+        FLAGS.seed,
+        label_mode,
+        0.1 if conditioning == "class" else 0.0,
+    )
     _restore_ema(model, FLAGS.checkpoint)
     sampler = DDIMSampler()
 
@@ -102,8 +117,18 @@ def main(_):
             return jnp.split(output, 2, axis=-1)[0]
         return output
 
-    labels = jnp.arange(FLAGS.num_samples, dtype=jnp.int32) % config.model.num_classes
-    null_labels = jnp.full_like(labels, config.model.num_classes)
+    if conditioning == "class" and FLAGS.class_id >= 0:
+        labels = jnp.full((FLAGS.num_samples,), FLAGS.class_id, dtype=jnp.int32)
+    else:
+        labels = jnp.arange(FLAGS.num_samples, dtype=jnp.int32) % config.model.num_classes
+    null_labels = (
+        jnp.full_like(labels, config.model.num_classes)
+        if conditioning == "class"
+        else None
+    )
+    cfg_scale = (
+        config.evaluation.cfg_scale if FLAGS.cfg_scale < 0 else FLAGS.cfg_scale
+    ) if conditioning == "class" else 1.0
     samples = sampler.sample(
         model_fn,
         (
@@ -116,8 +141,9 @@ def main(_):
         num_inference_steps=FLAGS.num_inference_steps,
         y=labels,
         null_y=null_labels,
-        cfg_scale=FLAGS.cfg_scale,
+        cfg_scale=cfg_scale,
     )
     _save_grid(samples, FLAGS.output_path)
-    print(f"Generated {FLAGS.num_samples} Fashion MNIST samples on {jax.devices()[0]}.")
+    mode = f"class {FLAGS.class_id}" if conditioning == "class" and FLAGS.class_id >= 0 else conditioning
+    print(f"Generated {FLAGS.num_samples} Fashion MNIST samples ({mode}) on {jax.devices()[0]}.")
     print(f"Saved image grid to {FLAGS.output_path}")

@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 import pytest
 
-from src.models.dit.dit import DiT
+from src.models.dit.dit import DiT, resolve_conditioning_mode
 
 def test_dit_initialization():
     """Test that the DiT model can be initialized."""
@@ -76,3 +76,48 @@ def test_dit_forward_pass_with_attribute_labels():
 
     output = model(x, t, y)
     assert output.shape == (batch_size, 32, 32, 8)
+
+
+def test_conditioning_mode_validation():
+    assert resolve_conditioning_mode("class") == "class"
+    assert resolve_conditioning_mode("unconditional") == "none"
+    with pytest.raises(ValueError, match="Expected 'class' or 'unconditional'"):
+        resolve_conditioning_mode("invalid")
+
+
+def test_unconditional_label_embedding_ignores_labels():
+    model = DiT(
+        input_size=28,
+        patch_size=2,
+        in_channels=1,
+        hidden_size=32,
+        depth=1,
+        num_heads=2,
+        num_classes=10,
+        label_mode="none",
+        label_dropout_prob=0.0,
+        rngs=nnx.Rngs(0),
+    )
+    labels = jnp.array([0, 9], dtype=jnp.int32)
+    embeddings = model.y_embedder(labels, train=False)
+    assert embeddings.shape == (2, 32)
+    assert jnp.all(embeddings == 0)
+
+
+def test_class_conditioning_uses_label_embeddings():
+    model = DiT(
+        input_size=28,
+        patch_size=2,
+        in_channels=1,
+        hidden_size=32,
+        depth=1,
+        num_heads=2,
+        num_classes=10,
+        label_mode="class",
+        label_dropout_prob=0.0,
+        rngs=nnx.Rngs(0),
+    )
+    labels = jnp.array([0, 9], dtype=jnp.int32)
+    embeddings = model.y_embedder(labels, train=False)
+    assert embeddings.shape == (2, 32)
+    assert not jnp.allclose(embeddings[0], embeddings[1])

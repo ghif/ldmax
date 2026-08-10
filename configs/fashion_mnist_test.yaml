@@ -1,6 +1,7 @@
 dataset: "fashion_mnist"
 
 model:
+  conditioning: "class"
   input_size: 28
   patch_size: 2
   in_channels: 1

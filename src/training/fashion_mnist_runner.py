@@ -13,7 +13,7 @@ from PIL import Image
 import optax
 
 from src.data.fashion_mnist import get_fashion_mnist_dataset
-from src.models.dit.dit import DiT
+from src.models.dit.dit import DiT, resolve_conditioning_mode
 from src.training.ema import EMAManager
 from src.training.sampler import DDIMSampler
 from src.training.step import compute_loss, train_step
@@ -52,6 +52,9 @@ def main(_):
     """Train a class-conditional raw-pixel diffusion model."""
     config = load_config(FLAGS.config)
     os.makedirs(FLAGS.output_dir, exist_ok=True)
+    conditioning = config.model.get("conditioning", "class")
+    label_mode = resolve_conditioning_mode(conditioning)
+    label_dropout_prob = 0.1 if conditioning == "class" else 0.0
 
     rng = RNGManager(config.training.seed)
     logger = TensorBoardLogger(os.path.join(FLAGS.output_dir, "logs"))
@@ -74,6 +77,8 @@ def main(_):
         depth=config.model.depth,
         num_heads=config.model.num_heads,
         num_classes=config.model.num_classes,
+        label_mode=label_mode,
+        label_dropout_prob=label_dropout_prob,
         learn_sigma=config.model.get("learn_sigma", False),
         rngs=nnx.Rngs(rng.next()),
     )
@@ -94,6 +99,8 @@ def main(_):
         depth=config.model.depth,
         num_heads=config.model.num_heads,
         num_classes=config.model.num_classes,
+        label_mode=label_mode,
+        label_dropout_prob=label_dropout_prob,
         learn_sigma=config.model.get("learn_sigma", False),
         rngs=nnx.Rngs(rng.next()),
     )
@@ -125,7 +132,7 @@ def main(_):
 
     @nnx.jit
     def validation_step(model, latents, labels, rng_key):
-        return compute_loss(model, latents, labels, rng_key)
+        return compute_loss(model, latents, labels, rng_key, train=False)
 
     trainlog_path = os.path.join(FLAGS.output_dir, "train_logs.txt")
     trainlog = open(trainlog_path, "w", encoding="utf-8")
@@ -209,7 +216,11 @@ def main(_):
                 nnx.update(sampling_model, ema.ema_state)
                 sample_count = config.evaluation.sample_count
                 labels = jnp.arange(sample_count, dtype=jnp.int32) % config.model.num_classes
-                null_labels = jnp.full_like(labels, config.model.num_classes)
+                null_labels = (
+                    jnp.full_like(labels, config.model.num_classes)
+                    if conditioning == "class"
+                    else None
+                )
                 samples = sampler.sample(
                     lambda x, t, y: model_fn(sampling_model, x, t, y),
                     (
@@ -222,7 +233,11 @@ def main(_):
                     num_inference_steps=config.evaluation.num_inference_steps,
                     y=labels,
                     null_y=null_labels,
-                    cfg_scale=config.evaluation.cfg_scale,
+                    cfg_scale=(
+                        config.evaluation.cfg_scale
+                        if conditioning == "class"
+                        else 1.0
+                    ),
                 )
                 sample_images = (samples + 1.0).clip(0.0, 2.0) / 2.0
                 logger.log_images(step, "train/samples", sample_images)
