@@ -1,16 +1,25 @@
 """Utilities for overlapping host-to-device transfers with computation."""
 
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Iterable
+
 import jax
-from typing import Iterable, Any
+
 
 class DevicePrefetcher:
     """A wrapper around an iterator that prefetches data to devices.
-    
+
     This helps hide the latency of host-to-device transfers (jax.device_put)
     by running them in the background while the TPU is computing.
     """
 
-    def __init__(self, iterable: Iterable[Any], sharding: jax.sharding.Sharding, prefetch_size: int = 2):
+    def __init__(
+        self,
+        iterable: Iterable[Any],
+        sharding: jax.sharding.Sharding,
+        prefetch_size: int = 2,
+    ):
         """Initialize the prefetcher.
 
         Args:
@@ -23,8 +32,10 @@ class DevicePrefetcher:
         self.prefetch_size = prefetch_size
 
     def __iter__(self):
+        """Yield batches after staging them on the target device."""
         iterator = iter(self.iterable)
-        queue = []
+        queue: deque[Future] = deque()
+        executor = ThreadPoolExecutor(max_workers=1)
 
         def get_next_sharded():
             try:
@@ -34,14 +45,16 @@ class DevicePrefetcher:
             except StopIteration:
                 return None
 
-        # Initial prefetch
-        for _ in range(self.prefetch_size):
-            item = get_next_sharded()
-            if item is not None:
-                queue.append(item)
+        try:
+            # The worker performs both host batch preparation and device transfer.
+            for _ in range(self.prefetch_size):
+                queue.append(executor.submit(get_next_sharded))
 
-        while queue:
-            yield queue.pop(0)
-            item = get_next_sharded()
-            if item is not None:
-                queue.append(item)
+            while queue:
+                item = queue.popleft().result()
+                if item is None:
+                    break
+                yield item
+                queue.append(executor.submit(get_next_sharded))
+        finally:
+            executor.shutdown(wait=True)

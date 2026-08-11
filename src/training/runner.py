@@ -227,7 +227,6 @@ def main(_):
             if step % config.evaluation.log_interval == 0:
                 logger.log_scalars(step, {"train/loss": float(metrics["loss"])})
                 logger.flush()
-                checkpointer.sync_to_gcs()
                 
             # Sampling
             if step % config.evaluation.sampling_interval == 0:
@@ -270,7 +269,6 @@ def main(_):
                 samples_pixel = vae_manager.decode(samples)
                 logger.log_images(step, "train/samples", samples_pixel[:num_samples])
                 logger.flush()
-                checkpointer.sync_to_gcs()
 
             # Checkpointing
             if (step % config.evaluation.checkpoint_interval == 0 and step > 0) or (step == config.training.total_steps - 1):
@@ -282,4 +280,5 @@ def main(_):
                 })
             
     logger.close()
+    checkpointer.sync_to_gcs()
     print("Training complete.")

@@ -81,6 +81,34 @@ python -m scripts.sample_fashion_mnist \
     --output_path ./samples/fashion_mnist.png
 ```
 
+To generate samples for one Fashion MNIST class, use the dedicated
+class-conditional script. Fashion MNIST class IDs are 0–9.
+
+```bash
+python -m scripts.sample_fashion_mnist_conditional \
+    --config configs/fashion_mnist.yaml \
+    --checkpoint ./outputs/fashion_mnist/checkpoints/1000 \
+    --class_id 7 \
+    --num_samples 16 \
+    --output_path ./samples/fashion_mnist_sneakers.png
+```
+
+To continue Fashion MNIST training from the latest checkpoint in an existing
+run, provide `--resume_from` and a new `--output_dir`. `training.total_steps`
+is the absolute target step, so this resumes step 5000 toward step 10000:
+
+```bash
+python -m scripts.train_fashion_mnist \
+    --config configs/fashion_mnist.yaml \
+    --resume_from models/fashion-mnist_ccond_cpu_10-08-2026 \
+    --output_dir models/fashion-mnist_ccond_cpu_10-08-2026_resume
+```
+
+New checkpoints include the RNG state. Older checkpoints without RNG state,
+including the step-5000 checkpoint above, use a deterministic seed-and-step
+fallback, so their continuation cannot reproduce the exact original random
+stream after the saved step.
+
 **CIFAR-10 ($128 \times 128 \to 16 \times 16$ latents):**
 ```bash
 export PYTHONPATH=$PYTHONPATH:.

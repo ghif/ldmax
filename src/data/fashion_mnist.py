@@ -1,15 +1,13 @@
 """Simple NumPy data iterator for raw-pixel Fashion MNIST training."""
 
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
-import tempfile
-from typing import Any
 from urllib.parse import urlparse
 
 import numpy as np
 from datasets import Dataset
 from google.cloud import storage
-
 
 DEFAULT_DATASET_PATH = "gs://diffjax/datasets/fashion-mnist/huggingface"
 
@@ -38,7 +36,9 @@ def _load_dataset_from_gcs(dataset_path: str, split: str) -> Dataset:
     if cache_path.exists() and cache_path.stat().st_size == blob.size:
         return Dataset.from_file(str(cache_path))
 
-    with tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".arrow", delete=False) as temporary_file:
+    with tempfile.NamedTemporaryFile(
+        dir=cache_dir, suffix=".arrow", delete=False
+    ) as temporary_file:
         temporary_path = Path(temporary_file.name)
     try:
         blob.download_to_filename(str(temporary_path))
@@ -74,7 +74,17 @@ def get_fashion_mnist_dataset(
             f"batch_size ({batch_size}) cannot exceed dataset size ({len(dataset)})"
         )
 
-    indices = np.arange(len(dataset), dtype=np.int64)
+    # Materialize the memory-mapped Arrow split once. This avoids converting
+    # each PIL image and label independently inside every training iteration.
+    images = np.stack(
+        [np.asarray(image, dtype=np.float32) for image in dataset["image"]],
+        axis=0,
+    )
+    images = images[..., None]
+    images = images / 127.5 - 1.0
+    labels = np.asarray(dataset["label"], dtype=np.int32)
+
+    indices = np.arange(len(images), dtype=np.int64)
     random = np.random.default_rng(seed)
 
     while True:
@@ -83,15 +93,7 @@ def get_fashion_mnist_dataset(
 
         for start in range(0, len(indices) - batch_size + 1, batch_size):
             batch_indices = indices[start : start + batch_size]
-            images = []
-            labels = []
-            for index in batch_indices:
-                item: Any = dataset[int(index)]
-                image = np.asarray(item["image"], dtype=np.float32) / 127.5 - 1.0
-                images.append(image[..., None])  # NHWC: 28 x 28 x 1
-                labels.append(np.int32(item["label"]))
-
             yield {
-                "image": np.stack(images, axis=0),
-                "label": np.asarray(labels, dtype=np.int32),
+                "image": images[batch_indices],
+                "label": labels[batch_indices],
             }

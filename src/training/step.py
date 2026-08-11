@@ -1,15 +1,20 @@
 """Training step implementation using JAX/Optax."""
 
+from typing import Any, Dict
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import optax
-from typing import Any, Dict, Tuple, Optional
+
+NUM_TRAIN_TIMESTEPS = 1000
+BETAS = jnp.linspace(0.0001, 0.02, NUM_TRAIN_TIMESTEPS)
+ALPHAS_CUMPROD = jnp.cumprod(1.0 - BETAS)
+
 
 def compute_loss(
-    model: Any, 
+    model: Any,
     latents: jax.Array,
-    labels: jax.Array, 
+    labels: jax.Array,
     key: jax.Array,
     train: bool = True,
 ) -> jax.Array:
@@ -27,27 +32,23 @@ def compute_loss(
     """
     # Split key for different operations
     noise_key, time_key, model_key = jax.random.split(key, 3)
-    
+
     # 1. Sample noise
     # Ensure noise matches latents dtype for MXU efficiency
     noise = jax.random.normal(noise_key, latents.shape, dtype=latents.dtype)
-    t = jax.random.randint(time_key, (latents.shape[0],), 0, 1000)
-    
+    t = jax.random.randint(time_key, (latents.shape[0],), 0, NUM_TRAIN_TIMESTEPS)
+
     # 2. Add noise to latents (forward diffusion)
     # Standard linear schedule
-    betas = jnp.linspace(0.0001, 0.02, 1000)
-    alphas = 1.0 - betas
-    alphas_cumprod = jnp.cumprod(alphas)
-    
-    sqrt_alphas_cumprod = jnp.sqrt(alphas_cumprod[t])[:, None, None, None]
-    sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - alphas_cumprod[t])[:, None, None, None]
-    
+    sqrt_alphas_cumprod = jnp.sqrt(ALPHAS_CUMPROD[t])[:, None, None, None]
+    sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - ALPHAS_CUMPROD[t])[:, None, None, None]
+
     # Ensure constants match dtype
     sqrt_alphas_cumprod = sqrt_alphas_cumprod.astype(latents.dtype)
     sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.astype(latents.dtype)
-    
+
     noisy_latents = sqrt_alphas_cumprod * latents + sqrt_one_minus_alphas_cumprod * noise
-    
+
     # 3. Predict noise with DiT
     model_output = model(
         noisy_latents,
@@ -55,14 +56,14 @@ def compute_loss(
         labels,
         rngs=nnx.Rngs(model_key) if train else None,
     )
-    
-    # If learn_sigma is True, model_output has 2*C channels. 
+
+    # If learn_sigma is True, model_output has 2*C channels.
     # We take the first C channels for noise prediction.
     if model_output.shape[-1] == latents.shape[-1] * 2:
         pred_noise, _ = jnp.split(model_output, 2, axis=-1)
     else:
         pred_noise = model_output
-        
+
     # 4. MSE Loss
     return jnp.mean((pred_noise - noise) ** 2)
 
@@ -96,5 +97,5 @@ def train_step(
 
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     optimizer.update(model, grads)
-    
+
     return {"loss": loss}

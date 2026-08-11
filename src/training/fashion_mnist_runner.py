@@ -1,16 +1,21 @@
 """End-to-end raw-pixel DiT training on Fashion MNIST."""
 
+import json
 import os
 import time
 from math import ceil, sqrt
+from pathlib import Path
+from typing import Any, Mapping
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
+import orbax.checkpoint as ocp
 from absl import flags
 from flax import nnx
+from orbax.checkpoint import type_handlers
 from PIL import Image
-import optax
 
 from src.data.fashion_mnist import get_fashion_mnist_dataset
 from src.models.dit.dit import DiT, resolve_conditioning_mode
@@ -20,12 +25,17 @@ from src.training.step import compute_loss, train_step
 from src.utils.checkpoint import CheckpointManager
 from src.utils.config import load_config
 from src.utils.logging import TensorBoardLogger
+from src.utils.prefetch import DevicePrefetcher
 from src.utils.rng import RNGManager
-
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("config", "configs/fashion_mnist.yaml", "Path to the config file.")
-flags.DEFINE_string("output_dir", "./outputs/fashion_mnist", "Directory for logs and checkpoints.")
+flags.DEFINE_string("output_dir", "", "Directory for logs and checkpoints.")
+flags.DEFINE_string(
+    "resume_from",
+    "",
+    "Run directory or checkpoint directory from which to resume training.",
+)
 
 
 def _save_sample_grid(samples: jax.Array, path: str) -> None:
@@ -43,30 +53,211 @@ def _save_sample_grid(samples: jax.Array, path: str) -> None:
             image = image[..., 0]
         else:
             image = image[..., :3]
-        grid.paste(Image.fromarray(image, mode=mode), ((index % columns) * width, (index // columns) * height))
+        grid.paste(
+            Image.fromarray(image, mode=mode),
+            ((index % columns) * width, (index // columns) * height),
+        )
 
     grid.save(path)
+
+
+def _checkpoint_state(state):
+    """Convert floating-point checkpoint leaves to FP32."""
+    return jax.tree.map(
+        lambda value: value.astype(jnp.float32)
+        if isinstance(value, jax.Array) and jnp.issubdtype(value.dtype, jnp.floating)
+        else value,
+        state,
+    )
+
+
+def _resolve_resume_checkpoint(resume_from: str) -> tuple[Path, int]:
+    """Resolve a run/checkpoint path to an Orbax root and step."""
+    path = Path(resume_from).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Resume path does not exist: {path}")
+
+    if (path / "checkpoints").is_dir():
+        checkpoint_root = path / "checkpoints"
+        manager = CheckpointManager(str(checkpoint_root))
+        step = manager.latest_step()
+        if step is None:
+            raise ValueError(f"No checkpoints found under {checkpoint_root}")
+        return checkpoint_root, int(step)
+
+    if path.name == "checkpoints" and path.is_dir():
+        checkpoint_root = path
+        manager = CheckpointManager(str(checkpoint_root))
+        step = manager.latest_step()
+        if step is None:
+            raise ValueError(f"No checkpoints found under {checkpoint_root}")
+        return checkpoint_root, int(step)
+
+    if path.name.isdigit() and (path / "default").is_dir():
+        return path.parent, int(path.name)
+
+    raise ValueError(
+        "--resume_from must be a run directory containing checkpoints/ or "
+        "an individual Orbax checkpoint directory"
+    )
+
+
+def _checkpoint_has_rng(checkpoint_root: Path, step: int) -> bool:
+    """Check Orbax metadata for an RNG leaf without deserializing arrays."""
+    metadata_path = checkpoint_root / str(step) / "default" / "_METADATA"
+    if not metadata_path.is_file():
+        return False
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    return any(
+        key.startswith("('rng'")
+        for key in metadata.get("tree_metadata", {})
+    )
+
+
+def _checkpoint_value(state: Mapping[str, Any], path: tuple[Any, ...]) -> Any:
+    """Look up a serialized NNX leaf using integer or string path keys."""
+    value: Any = state
+    for key in path:
+        if not isinstance(value, Mapping):
+            raise KeyError(path)
+        if key in value:
+            value = value[key]
+        elif str(key) in value:
+            value = value[str(key)]
+        else:
+            raise KeyError(path)
+    if isinstance(value, Mapping) and "value" in value:
+        value = value["value"]
+    return value
+
+
+def _validate_nnx_state(
+    target_state: nnx.State,
+    checkpoint_state: Mapping[str, Any],
+    name: str,
+) -> None:
+    """Validate serialized paths and shapes before mutating an NNX state."""
+    for path, variable in zip(
+        target_state.flat_state().paths,
+        target_state.flat_state().leaves,
+    ):
+        try:
+            value = _checkpoint_value(checkpoint_state, path)
+        except KeyError as error:
+            raise ValueError(f"Checkpoint {name} is missing state path {path}") from error
+        if hasattr(value, "shape") and value.shape != variable.value.shape:
+            raise ValueError(
+                f"Checkpoint {name} shape mismatch at {path}: "
+                f"checkpoint={value.shape}, config={variable.value.shape}"
+            )
+
+
+def _restore_nnx_state(
+    target_state: nnx.State,
+    checkpoint_state: Mapping[str, Any],
+    name: str,
+) -> None:
+    """Restore serialized values into an existing NNX state."""
+    for path, variable in zip(
+        target_state.flat_state().paths,
+        target_state.flat_state().leaves,
+    ):
+        value = _checkpoint_value(checkpoint_state, path)
+        if hasattr(value, "dtype") and hasattr(variable.value, "dtype"):
+            if jnp.issubdtype(variable.value.dtype, jnp.floating):
+                value = value.astype(variable.value.dtype)
+        variable.value = value
+
+
+def _restore_template(state: nnx.State) -> Any:
+    """Build a concrete Orbax template from an NNX state."""
+    sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+
+    def wrap(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {key: wrap(child) for key, child in value.items()}
+        return {"value": jax.device_put(value, sharding)}
+
+    return wrap(state.to_pure_dict())
+
+
+def _restore_args(template: Any, sharding: jax.sharding.Sharding) -> Any:
+    """Create Orbax array restore arguments for a concrete template."""
+    args = jax.tree.map(
+        lambda _: type_handlers.ArrayRestoreArgs(sharding=sharding),
+        template,
+    )
+    return ocp.args.PyTreeRestore(template, restore_args=args, partial_restore=True)
+
+
+def _restore_training_state(
+    model: DiT,
+    optimizer: nnx.Optimizer,
+    ema: EMAManager,
+    checkpoint_state: Mapping[str, Any],
+    conditioning: str,
+) -> None:
+    """Validate and restore model, optimizer, and EMA state."""
+    required = {"model", "ema", "opt"}
+    missing = required.difference(checkpoint_state)
+    if missing:
+        raise ValueError(f"Checkpoint is missing required state groups: {sorted(missing)}")
+
+    model_state = nnx.state(model)
+    optimizer_state = nnx.state(optimizer)
+    ema_state = ema.ema_state
+    if conditioning == "class":
+        class_embedding = checkpoint_state["model"].get("y_embedder", {}).get("embedding_table")
+        if class_embedding is None:
+            raise ValueError("Checkpoint conditioning does not match config: expected class labels")
+    else:
+        class_embedding = checkpoint_state["model"].get("y_embedder", {}).get("embedding_table")
+        if class_embedding is not None:
+            raise ValueError(
+                "Checkpoint conditioning does not match config: "
+                "expected unconditional model"
+            )
+
+    _validate_nnx_state(model_state, checkpoint_state["model"], "model")
+    _validate_nnx_state(optimizer_state, checkpoint_state["opt"], "optimizer")
+    _validate_nnx_state(ema_state, checkpoint_state["ema"], "EMA")
+    _restore_nnx_state(model_state, checkpoint_state["model"], "model")
+    _restore_nnx_state(optimizer_state, checkpoint_state["opt"], "optimizer")
+    _restore_nnx_state(ema_state, checkpoint_state["ema"], "EMA")
 
 
 def main(_):
     """Train a class-conditional raw-pixel diffusion model."""
     config = load_config(FLAGS.config)
-    os.makedirs(FLAGS.output_dir, exist_ok=True)
+    output_dir = FLAGS.output_dir or "./outputs/fashion_mnist"
+    if FLAGS.resume_from and not FLAGS.output_dir:
+        raise ValueError("--output_dir is required when --resume_from is used")
+    os.makedirs(output_dir, exist_ok=True)
+    resume_root = None
+    restored_step = 0
+    checkpoint_state = None
+    checkpoint_has_rng = False
+    if FLAGS.resume_from:
+        resume_root, restored_step = _resolve_resume_checkpoint(FLAGS.resume_from)
+        checkpoint_has_rng = _checkpoint_has_rng(resume_root, restored_step)
     conditioning = config.model.get("conditioning", "class")
     label_mode = resolve_conditioning_mode(conditioning)
     label_dropout_prob = 0.1 if conditioning == "class" else 0.0
+    use_bf16 = config.training.get("use_bf16", False)
+    if use_bf16:
+        jax.config.update("jax_default_matmul_precision", "bfloat16")
 
     rng = RNGManager(config.training.seed)
-    logger = TensorBoardLogger(os.path.join(FLAGS.output_dir, "logs"))
+    logger = TensorBoardLogger(os.path.join(output_dir, "logs"))
     checkpointer = CheckpointManager(
-        os.path.join(FLAGS.output_dir, "checkpoints"),
+        os.path.join(output_dir, "checkpoints"),
         gcs_directory="gs://diffjax/models",
         artifact_paths=[
-            os.path.join(FLAGS.output_dir, "logs"),
-            os.path.join(FLAGS.output_dir, "train_logs.txt"),
+            os.path.join(output_dir, "logs"),
+            os.path.join(output_dir, "train_logs.txt"),
         ],
     )
-    sample_artifact_dir = os.path.join(FLAGS.output_dir, "checkpoints", "samples")
+    sample_artifact_dir = os.path.join(output_dir, "checkpoints", "samples")
     os.makedirs(sample_artifact_dir, exist_ok=True)
 
     model = DiT(
@@ -82,6 +273,14 @@ def main(_):
         learn_sigma=config.model.get("learn_sigma", False),
         rngs=nnx.Rngs(rng.next()),
     )
+    if use_bf16:
+        model_state = jax.tree.map(
+            lambda value: value.astype(jnp.bfloat16)
+            if isinstance(value, jax.Array) and value.dtype == jnp.float32
+            else value,
+            nnx.state(model),
+        )
+        nnx.update(model, model_state)
     optimizer = nnx.Optimizer(
         model,
         optax.adamw(
@@ -104,6 +303,28 @@ def main(_):
         learn_sigma=config.model.get("learn_sigma", False),
         rngs=nnx.Rngs(rng.next()),
     )
+    if resume_root is not None:
+        source_checkpointer = CheckpointManager(str(resume_root))
+        restore_sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+        restore_template = {
+            "model": _restore_template(nnx.state(model)),
+            "ema": _restore_template(ema.ema_state),
+            "opt": _restore_template(nnx.state(optimizer)),
+        }
+        if checkpoint_has_rng:
+            restore_template["rng"] = {"key": jax.device_put(rng.state, restore_sharding)}
+        checkpoint_state = source_checkpointer.restore(
+            restored_step,
+            args=_restore_args(restore_template, restore_sharding),
+        )
+        if checkpoint_state is None:
+            raise ValueError(f"Unable to restore checkpoint step {restored_step}")
+        _restore_training_state(model, optimizer, ema, checkpoint_state, conditioning)
+        rng_state = checkpoint_state.get("rng")
+        if isinstance(rng_state, Mapping) and "key" in rng_state:
+            rng.restore(rng_state["key"])
+        else:
+            rng = RNGManager.from_seed_and_step(config.training.seed, restored_step)
     sampler = DDIMSampler()
 
     @nnx.jit
@@ -120,7 +341,12 @@ def main(_):
         seed=config.training.seed,
         dataset_name=config.data.dataset_name,
     )
-    dataset_iter = iter(dataset)
+    prefetch_size = config.training.get("prefetch_size", 2)
+    if prefetch_size > 0:
+        prefetch_sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+        dataset_iter = iter(DevicePrefetcher(dataset, prefetch_sharding, prefetch_size))
+    else:
+        dataset_iter = iter(dataset)
     validation_dataset = get_fashion_mnist_dataset(
         batch_size=config.training.batch_size,
         split="test",
@@ -128,13 +354,16 @@ def main(_):
         seed=config.training.seed,
         dataset_name=config.data.dataset_name,
     )
-    validation_iter = iter(validation_dataset)
+    if prefetch_size > 0:
+        validation_iter = iter(DevicePrefetcher(validation_dataset, prefetch_sharding, 1))
+    else:
+        validation_iter = iter(validation_dataset)
 
     @nnx.jit
     def validation_step(model, latents, labels, rng_key):
         return compute_loss(model, latents, labels, rng_key, train=False)
 
-    trainlog_path = os.path.join(FLAGS.output_dir, "train_logs.txt")
+    trainlog_path = os.path.join(output_dir, "train_logs.txt")
     trainlog = open(trainlog_path, "w", encoding="utf-8")
 
     def emit(message: str) -> None:
@@ -145,12 +374,24 @@ def main(_):
 
     emit(f"Using device: {jax.devices()[0]}")
     emit("Training directly on 28x28x1 pixels; no VAE is used.")
+    if resume_root is not None:
+        emit(f"Resuming from {resume_root} at checkpoint step {restored_step}.")
+        if checkpoint_state is not None and not checkpoint_has_rng:
+            emit("Checkpoint has no RNG state; using deterministic seed-and-step fallback.")
     emit(f"Starting training for {config.training.total_steps} steps...")
+    if resume_root is not None and restored_step >= config.training.total_steps:
+        emit("Checkpoint already reaches the configured target; no training steps to run.")
     training_start = time.perf_counter()
+    data_wait_duration = 0.0
+    ema_update_duration = 0.0
+    sampling_duration = 0.0
+    gcs_sync_duration = 0.0
 
     try:
-        for step in range(config.training.total_steps):
+        for step in range(restored_step, config.training.total_steps):
+            data_wait_start = time.perf_counter()
             batch = next(dataset_iter)
+            data_wait_duration = time.perf_counter() - data_wait_start
             train_step_start = time.perf_counter()
             metrics = train_step(
                 model,
@@ -158,9 +399,12 @@ def main(_):
                 batch["image"],
                 batch["label"],
                 rng.next(),
-                use_bf16=False,
+                use_bf16=use_bf16,
             )
+            train_dispatch_duration = time.perf_counter() - train_step_start
+            ema_start = time.perf_counter()
             ema.update(model)
+            ema_update_duration = time.perf_counter() - ema_start
 
             if step % config.evaluation.log_interval == 0:
                 loss = float(metrics["loss"])
@@ -192,13 +436,17 @@ def main(_):
                         "performance/train_step_sec": train_step_duration,
                         "performance/train_steps_per_sec": train_steps_per_sec,
                         "performance/train_samples_per_sec": train_samples_per_sec,
+                        "performance/data_wait_sec": data_wait_duration,
+                        "performance/train_dispatch_sec": train_dispatch_duration,
+                        "performance/ema_update_sec": ema_update_duration,
                         "performance/validation_step_sec": validation_step_duration,
                         "performance/validation_steps_per_sec": validation_steps_per_sec,
                         "performance/validation_samples_per_sec": validation_samples_per_sec,
+                        "performance/sampling_sec": sampling_duration,
+                        "performance/gcs_sync_sec": gcs_sync_duration,
                     },
                 )
                 logger.flush()
-                checkpointer.sync_to_gcs()
                 emit(
                     f"step={step + 1:05d}/{config.training.total_steps:05d} "
                     f"progress={progress_percent:.2f}% train_loss={loss:.6f} "
@@ -206,13 +454,19 @@ def main(_):
                     f"train_step_sec={train_step_duration:.6f} "
                     f"train_steps_per_sec={train_steps_per_sec:.6f} "
                     f"train_samples_per_sec={train_samples_per_sec:.6f} "
+                    f"data_wait_sec={data_wait_duration:.6f} "
+                    f"train_dispatch_sec={train_dispatch_duration:.6f} "
+                    f"ema_update_sec={ema_update_duration:.6f} "
                     f"validation_step_sec={validation_step_duration:.6f} "
                     f"validation_steps_per_sec={validation_steps_per_sec:.6f} "
                     f"validation_samples_per_sec={validation_samples_per_sec:.6f} "
+                    f"sampling_sec={sampling_duration:.6f} "
+                    f"gcs_sync_sec={gcs_sync_duration:.6f} "
                     f"elapsed_sec={elapsed_sec:.6f}"
                 )
 
             if step % config.evaluation.sampling_interval == 0:
+                sampling_start = time.perf_counter()
                 nnx.update(sampling_model, ema.ema_state)
                 sample_count = config.evaluation.sample_count
                 labels = jnp.arange(sample_count, dtype=jnp.int32) % config.model.num_classes
@@ -246,14 +500,22 @@ def main(_):
                     os.path.join(sample_artifact_dir, f"samples_step_{step:06d}.png"),
                 )
                 logger.flush()
-                checkpointer.sync_to_gcs()
+                sampling_duration = time.perf_counter() - sampling_start
 
             if step % config.evaluation.checkpoint_interval == 0 and step > 0:
+                gcs_sync_start = time.perf_counter()
                 checkpointer.save(
                     step,
-                    {"model": nnx.state(model), "ema": ema.ema_state, "opt": nnx.state(optimizer)},
+                    {
+                        "model": _checkpoint_state(nnx.state(model)),
+                        "ema": _checkpoint_state(ema.ema_state),
+                        "opt": _checkpoint_state(nnx.state(optimizer)),
+                        "rng": {"key": rng.state},
+                    },
                 )
+                gcs_sync_duration = time.perf_counter() - gcs_sync_start
         emit("Training complete.")
     finally:
         logger.close()
         trainlog.close()
+        checkpointer.sync_to_gcs()

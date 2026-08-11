@@ -1,7 +1,7 @@
 """Centralized PRNGKey management for reproducibility."""
 
 import jax
-import jax.numpy as jnp
+
 
 class RNGManager:
     """Manages PRNGKeys for JAX operations."""
@@ -13,6 +13,22 @@ class RNGManager:
             seed: The initial integer seed.
         """
         self._key = jax.random.PRNGKey(seed)
+
+    @classmethod
+    def from_seed_and_step(cls, seed: int, step: int) -> "RNGManager":
+        """Create a deterministic fallback stream for an older checkpoint."""
+        manager = cls(seed)
+        manager._key = jax.random.fold_in(manager._key, step)
+        return manager
+
+    @property
+    def state(self) -> jax.Array:
+        """Return the current key for checkpointing."""
+        return self._key
+
+    def restore(self, key: jax.Array) -> None:
+        """Restore the current key from checkpoint state."""
+        self._key = key
 
     def next(self) -> jax.Array:
         """Get the next PRNGKey.

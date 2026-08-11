@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from google.cloud import storage
 import orbax.checkpoint as ocp
+from google.cloud import storage
 
 
 class CheckpointManager:
@@ -23,18 +23,20 @@ class CheckpointManager:
         Args:
             directory: Directory to save checkpoints in.
             max_to_keep: Maximum number of recent checkpoints to keep.
+            gcs_directory: Optional GCS destination for synchronized artifacts.
+            artifact_paths: Additional local files or directories to synchronize.
         """
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.gcs_directory = gcs_directory
         self.artifact_paths = [Path(path) for path in artifact_paths or []]
-        
+
         # Initialize checkpointer
         options = ocp.CheckpointManagerOptions(
             max_to_keep=max_to_keep,
             create=True
         )
-        
+
         # Initialize checkpointer using modern API
         self.manager = ocp.CheckpointManager(
             self.directory.absolute(),
@@ -80,24 +82,37 @@ class CheckpointManager:
                 relative_path = path.relative_to(run_root).as_posix()
                 bucket.blob(f"{remote_prefix}/{relative_path}").upload_from_filename(str(path))
 
-    def restore(self, step: int = None, items: Any = None, partial_restore: bool = True) -> Any:
+    def restore(
+        self,
+        step: int = None,
+        items: Any = None,
+        partial_restore: bool = True,
+        restore_kwargs: Mapping[str, Any] | None = None,
+        args: Any = None,
+    ) -> Any:
         """Restore state from a checkpoint.
 
         Args:
             step: Specific step to restore. If None, restores latest.
             items: A template (e.g. state dictionary) to guide restoration.
             partial_restore: Whether to allow partial restoration if structures mismatch.
+            restore_kwargs: Additional Orbax restore arguments.
+            args: Explicit Orbax restore arguments, when required.
 
         Returns:
             The restored PyTree.
         """
         if step is None:
             step = self.manager.latest_step()
-        
+
         if step is None:
             return None
-            
-        return self.manager.restore(step, items=items, restore_kwargs={'partial_restore': partial_restore})
+
+        if args is not None:
+            return self.manager.restore(step, args=args)
+        kwargs = dict(restore_kwargs or {})
+        kwargs.setdefault("partial_restore", partial_restore)
+        return self.manager.restore(step, items=items, restore_kwargs=kwargs)
 
     def latest_step(self) -> int:
         """Get the latest checkpoint step."""
