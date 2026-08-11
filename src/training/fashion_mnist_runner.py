@@ -252,6 +252,8 @@ def main(_):
     checkpointer = CheckpointManager(
         os.path.join(output_dir, "checkpoints"),
         gcs_directory="gs://diffjax/models",
+        best_metric="validation_loss",
+        best_mode="min",
         artifact_paths=[
             os.path.join(output_dir, "logs"),
             os.path.join(output_dir, "train_logs.txt"),
@@ -382,6 +384,7 @@ def main(_):
     if resume_root is not None and restored_step >= config.training.total_steps:
         emit("Checkpoint already reaches the configured target; no training steps to run.")
     training_start = time.perf_counter()
+    latest_validation_loss = None
     data_wait_duration = 0.0
     ema_update_duration = 0.0
     sampling_duration = 0.0
@@ -419,6 +422,7 @@ def main(_):
                         rng.next(),
                     )
                 )
+                latest_validation_loss = validation_loss
                 validation_step_duration = time.perf_counter() - validation_step_start
                 batch_size = batch["image"].shape[0]
                 validation_batch_size = validation_batch["image"].shape[0]
@@ -502,7 +506,20 @@ def main(_):
                 logger.flush()
                 sampling_duration = time.perf_counter() - sampling_start
 
-            if step % config.evaluation.checkpoint_interval == 0 and step > 0:
+            should_checkpoint = (
+                step % config.evaluation.checkpoint_interval == 0 and step > 0
+            ) or step == config.training.total_steps - 1
+            if should_checkpoint:
+                if step % config.evaluation.log_interval != 0:
+                    validation_batch = next(validation_iter)
+                    latest_validation_loss = float(
+                        validation_step(
+                            model,
+                            validation_batch["image"],
+                            validation_batch["label"],
+                            rng.next(),
+                        )
+                    )
                 gcs_sync_start = time.perf_counter()
                 checkpointer.save(
                     step,
@@ -512,6 +529,7 @@ def main(_):
                         "opt": _checkpoint_state(nnx.state(optimizer)),
                         "rng": {"key": rng.state},
                     },
+                    metrics={"validation_loss": latest_validation_loss},
                 )
                 gcs_sync_duration = time.perf_counter() - gcs_sync_start
         emit("Training complete.")

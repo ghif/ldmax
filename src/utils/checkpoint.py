@@ -83,6 +83,8 @@ class CheckpointManager:
         max_to_keep: int = 5,
         gcs_directory: str | None = None,
         artifact_paths: list[str] | None = None,
+        best_metric: str | None = None,
+        best_mode: str = "min",
     ):
         """Initialize the checkpoint manager.
 
@@ -91,15 +93,22 @@ class CheckpointManager:
             max_to_keep: Maximum number of recent checkpoints to keep.
             gcs_directory: Optional GCS destination for synchronized artifacts.
             artifact_paths: Additional local files or directories to synchronize.
+            best_metric: Optional metric name used to retain the best checkpoint.
+            best_mode: Whether a lower or higher best metric is preferred.
         """
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.gcs_directory = gcs_directory
         self.artifact_paths = [Path(path) for path in artifact_paths or []]
+        self.best_metric = best_metric
+        if best_mode not in {"min", "max"}:
+            raise ValueError("best_mode must be 'min' or 'max'")
 
         # Initialize checkpointer
         options = ocp.CheckpointManagerOptions(
             max_to_keep=max_to_keep,
+            best_fn=(lambda metrics: metrics[best_metric]) if best_metric else None,
+            best_mode=best_mode,
             create=True
         )
 
@@ -110,14 +119,25 @@ class CheckpointManager:
             options=options
         )
 
-    def save(self, step: int, state: Mapping[str, Any]):
+    def save(
+        self,
+        step: int,
+        state: Mapping[str, Any],
+        metrics: Mapping[str, Any] | None = None,
+    ):
         """Save the current training state.
 
         Args:
             step: Current training step.
             state: A PyTree of the state to save.
+            metrics: Optional metrics used for best-checkpoint retention.
         """
-        self.manager.save(step, state)
+        if self.best_metric is not None:
+            if metrics is None or self.best_metric not in metrics:
+                raise ValueError(
+                    f"Checkpoint step {step} requires metric '{self.best_metric}'"
+                )
+        self.manager.save(step, state, metrics=metrics)
         if self.gcs_directory is not None:
             self.sync_to_gcs()
 
