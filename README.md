@@ -93,6 +93,12 @@ python -m scripts.sample_fashion_mnist_conditional \
     --output_path ./samples/fashion_mnist_sneakers.png
 ```
 
+The `--checkpoint` argument also accepts an Orbax checkpoint stored in GCS,
+for example `gs://diffjax/models/fashion-mnist_tpu_09-08-2026/checkpoints/12000`.
+The checkpoint is downloaded to `~/.cache/ldmax/checkpoints` and reused on
+subsequent runs. Configure Google Cloud Application Default Credentials before
+sampling from a private bucket.
+
 To continue Fashion MNIST training from the latest checkpoint in an existing
 run, provide `--resume_from` and a new `--output_dir`. `training.total_steps`
 is the absolute target step, so this resumes step 5000 toward step 10000:

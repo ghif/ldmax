@@ -12,14 +12,20 @@ from PIL import Image
 
 from src.models.dit.dit import DiT, resolve_conditioning_mode
 from src.training.sampler import DDIMSampler
-from src.utils.checkpoint import CheckpointManager
+from src.utils.checkpoint import CheckpointManager, materialize_checkpoint
 from src.utils.config import load_config
 from src.utils.rng import RNGManager
 
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("config", "configs/fashion_mnist.yaml", "Training config used to build the model.")
-flags.DEFINE_string("checkpoint", "", "Checkpoint directory, for example outputs/fashion_mnist/checkpoints/1000.")
+flags.DEFINE_string(
+    "checkpoint",
+    "",
+    "Local Orbax checkpoint or GCS checkpoint, for example "
+    "outputs/fashion_mnist/checkpoints/1000 or "
+    "gs://bucket/models/run/checkpoints/1000.",
+)
 flags.DEFINE_integer("num_samples", 16, "Number of images to generate.")
 flags.DEFINE_integer("num_inference_steps", 50, "Number of DDIM denoising steps.")
 flags.DEFINE_float("cfg_scale", -1.0, "Override config classifier-free guidance scale.")
@@ -48,8 +54,9 @@ def _build_model(config, seed: int, label_mode: str, label_dropout_prob: float) 
 
 def _restore_ema(model: DiT, checkpoint: str) -> None:
     """Restore EMA parameters from an individual Orbax checkpoint directory."""
-    checkpoint_root = os.path.dirname(os.path.abspath(checkpoint))
-    checkpoint_step = int(os.path.basename(os.path.normpath(checkpoint)))
+    checkpoint_path = materialize_checkpoint(checkpoint)
+    checkpoint_root = checkpoint_path.parent
+    checkpoint_step = int(checkpoint_path.name)
     manager = CheckpointManager(checkpoint_root)
     state = manager.restore(checkpoint_step)
     if state is None or "ema" not in state:

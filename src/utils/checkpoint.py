@@ -1,11 +1,77 @@
 """Orbax checkpointing utilities."""
 
+import hashlib
+import os
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
 import orbax.checkpoint as ocp
 from google.cloud import storage
+
+
+def materialize_checkpoint(checkpoint: str) -> Path:
+    """Return a local checkpoint path, downloading a GCS checkpoint if needed.
+
+    GCS checkpoints are stored as directory trees by Orbax.  Sampling needs
+    the complete tree locally because Orbax restores manifests and array data
+    from several files beneath the checkpoint prefix.
+    """
+    if not checkpoint.startswith("gs://"):
+        return Path(checkpoint).expanduser().resolve()
+
+    parsed = urlparse(checkpoint)
+    prefix = parsed.path.strip("/")
+    step_name = Path(prefix).name
+    if not parsed.netloc or not prefix or not step_name.isdigit():
+        raise ValueError(
+            "A GCS checkpoint must point to an individual numeric step, "
+            "for example gs://bucket/models/run/checkpoints/12000"
+        )
+
+    cache_root = Path(
+        os.environ.get("LDMAX_CHECKPOINT_CACHE", "~/.cache/ldmax/checkpoints")
+    ).expanduser()
+    cache_key = hashlib.sha256(checkpoint.encode("utf-8")).hexdigest()[:16]
+    local_checkpoint = cache_root / cache_key / "checkpoints" / step_name
+    complete_marker = local_checkpoint / ".download_complete"
+    if complete_marker.is_file():
+        return local_checkpoint
+
+    client = storage.Client()
+    blobs = list(client.list_blobs(parsed.netloc, prefix=prefix.rstrip("/") + "/"))
+    if not blobs:
+        raise FileNotFoundError(f"No GCS checkpoint files found under {checkpoint}")
+
+    download_root = local_checkpoint.parent.parent / f".{step_name}.partial"
+    if download_root.exists():
+        for path in sorted(download_root.rglob("*"), reverse=True):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+    local_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    download_root.mkdir(parents=True, exist_ok=True)
+
+    prefix_with_slash = prefix.rstrip("/") + "/"
+    for blob in blobs:
+        relative_path = blob.name[len(prefix_with_slash) :]
+        if not relative_path:
+            continue
+        destination = download_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(destination))
+
+    if local_checkpoint.exists():
+        for path in sorted(local_checkpoint.rglob("*"), reverse=True):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+        local_checkpoint.rmdir()
+    download_root.rename(local_checkpoint)
+    complete_marker.touch()
+    return local_checkpoint
 
 
 class CheckpointManager:
