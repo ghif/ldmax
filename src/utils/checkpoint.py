@@ -10,6 +10,34 @@ import orbax.checkpoint as ocp
 from google.cloud import storage
 
 
+def _latest_local_checkpoint(checkpoint_root: Path) -> Path:
+    """Return the highest numeric checkpoint directory under a local root."""
+    candidates = [
+        path
+        for path in checkpoint_root.iterdir()
+        if path.is_dir() and path.name.isdigit()
+    ]
+    if not candidates:
+        raise FileNotFoundError(f"No numeric checkpoints found under {checkpoint_root}")
+    return max(candidates, key=lambda path: int(path.name))
+
+
+def _latest_gcs_step(blob_names: list[str], prefix: str) -> int:
+    """Return the highest immediate numeric checkpoint directory in GCS."""
+    prefix_with_slash = prefix.rstrip("/") + "/"
+    steps = set()
+    for blob_name in blob_names:
+        if not blob_name.startswith(prefix_with_slash):
+            continue
+        relative_name = blob_name[len(prefix_with_slash) :]
+        step_name = relative_name.split("/", 1)[0]
+        if step_name.isdigit():
+            steps.add(int(step_name))
+    if not steps:
+        raise FileNotFoundError(f"No numeric checkpoints found under gs://{prefix}")
+    return max(steps)
+
+
 def materialize_checkpoint(checkpoint: str) -> Path:
     """Return a local checkpoint path, downloading a GCS checkpoint if needed.
 
@@ -18,30 +46,51 @@ def materialize_checkpoint(checkpoint: str) -> Path:
     from several files beneath the checkpoint prefix.
     """
     if not checkpoint.startswith("gs://"):
-        return Path(checkpoint).expanduser().resolve()
+        path = Path(checkpoint).expanduser().resolve()
+        if path.is_dir() and path.name.isdigit():
+            return path
+        if path.is_dir() and path.name == "checkpoints":
+            return _latest_local_checkpoint(path)
+        if path.is_dir() and (path / "checkpoints").is_dir():
+            return _latest_local_checkpoint(path / "checkpoints")
+        raise ValueError(
+            "A local checkpoint must point to a numeric step or a run/checkpoints "
+            "directory containing numeric checkpoints"
+        )
 
     parsed = urlparse(checkpoint)
     prefix = parsed.path.strip("/")
-    step_name = Path(prefix).name
-    if not parsed.netloc or not prefix or not step_name.isdigit():
+    if not parsed.netloc or not prefix:
         raise ValueError(
-            "A GCS checkpoint must point to an individual numeric step, "
-            "for example gs://bucket/models/run/checkpoints/12000"
+            "A GCS checkpoint must point to a run/checkpoints directory or "
+            "an individual numeric step, for example "
+            "gs://bucket/models/run/checkpoints/12000"
         )
 
+    client = storage.Client()
+    prefix_with_slash = prefix.rstrip("/") + "/"
+    blobs = list(client.list_blobs(parsed.netloc, prefix=prefix_with_slash))
+    if not blobs:
+        raise FileNotFoundError(f"No GCS checkpoint files found under {checkpoint}")
+
+    step_name = Path(prefix).name
+    if not step_name.isdigit():
+        step_name = str(_latest_gcs_step([blob.name for blob in blobs], prefix))
+        prefix = f"{prefix.rstrip('/')}/{step_name}"
+        prefix_with_slash = prefix + "/"
+        blobs = [blob for blob in blobs if blob.name.startswith(prefix_with_slash)]
+        if not blobs:
+            raise FileNotFoundError(f"No files found for selected checkpoint {prefix}")
+
+    resolved_checkpoint = f"gs://{parsed.netloc}/{prefix}"
     cache_root = Path(
         os.environ.get("LDMAX_CHECKPOINT_CACHE", "~/.cache/ldmax/checkpoints")
     ).expanduser()
-    cache_key = hashlib.sha256(checkpoint.encode("utf-8")).hexdigest()[:16]
+    cache_key = hashlib.sha256(resolved_checkpoint.encode("utf-8")).hexdigest()[:16]
     local_checkpoint = cache_root / cache_key / "checkpoints" / step_name
     complete_marker = local_checkpoint / ".download_complete"
     if complete_marker.is_file():
         return local_checkpoint
-
-    client = storage.Client()
-    blobs = list(client.list_blobs(parsed.netloc, prefix=prefix.rstrip("/") + "/"))
-    if not blobs:
-        raise FileNotFoundError(f"No GCS checkpoint files found under {checkpoint}")
 
     download_root = local_checkpoint.parent.parent / f".{step_name}.partial"
     if download_root.exists():

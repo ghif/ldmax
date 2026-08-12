@@ -6,8 +6,10 @@ import os
 import jax
 import jax.numpy as jnp
 import numpy as np
+import orbax.checkpoint as ocp
 from absl import flags
 from flax import nnx
+from orbax.checkpoint import type_handlers
 from PIL import Image
 
 from src.models.dit.dit import DiT, resolve_conditioning_mode
@@ -16,15 +18,17 @@ from src.utils.checkpoint import CheckpointManager, materialize_checkpoint
 from src.utils.config import load_config
 from src.utils.rng import RNGManager
 
-
 FLAGS = flags.FLAGS
-flags.DEFINE_string("config", "configs/fashion_mnist.yaml", "Training config used to build the model.")
+flags.DEFINE_string(
+    "config", "configs/fashion_mnist.yaml", "Training config used to build the model."
+)
 flags.DEFINE_string(
     "checkpoint",
     "",
     "Local Orbax checkpoint or GCS checkpoint, for example "
     "outputs/fashion_mnist/checkpoints/1000 or "
-    "gs://bucket/models/run/checkpoints/1000.",
+    "gs://bucket/models/run/checkpoints. If a run/checkpoints directory is "
+    "provided, the highest numeric checkpoint is selected automatically.",
 )
 flags.DEFINE_integer("num_samples", 16, "Number of images to generate.")
 flags.DEFINE_integer("num_inference_steps", 50, "Number of DDIM denoising steps.")
@@ -32,6 +36,11 @@ flags.DEFINE_float("cfg_scale", -1.0, "Override config classifier-free guidance 
 flags.DEFINE_integer("class_id", -1, "Class ID 0-9, or -1 for all classes.")
 flags.DEFINE_integer("seed", 0, "Random seed for the initial noise.")
 flags.DEFINE_string("output_path", "./fashion_mnist_samples.png", "Path for the output image grid.")
+flags.DEFINE_bool(
+    "cpu_only",
+    False,
+    "Force CPU execution and restore TPU checkpoints onto the local CPU.",
+)
 
 
 def _build_model(config, seed: int, label_mode: str, label_dropout_prob: float) -> DiT:
@@ -56,10 +65,31 @@ def _build_model(config, seed: int, label_mode: str, label_dropout_prob: float) 
 def _restore_ema(model: DiT, checkpoint: str) -> None:
     """Restore EMA parameters from an individual Orbax checkpoint directory."""
     checkpoint_path = materialize_checkpoint(checkpoint)
+    print(f"Using checkpoint: {checkpoint_path}")
     checkpoint_root = checkpoint_path.parent
     checkpoint_step = int(checkpoint_path.name)
     manager = CheckpointManager(checkpoint_root)
-    state = manager.restore(checkpoint_step)
+    sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+    pure_state = nnx.state(model).to_pure_dict()
+
+    def template(value):
+        if isinstance(value, dict):
+            return {key: template(child) for key, child in value.items()}
+        return {"value": jax.device_put(value, sharding)}
+
+    restore_template = {"ema": template(pure_state)}
+    restore_args = jax.tree.map(
+        lambda _: type_handlers.ArrayRestoreArgs(sharding=sharding),
+        restore_template,
+    )
+    state = manager.restore(
+        checkpoint_step,
+        args=ocp.args.PyTreeRestore(
+            restore_template,
+            restore_args=restore_args,
+            partial_restore=True,
+        ),
+    )
     if state is None or "ema" not in state:
         raise ValueError(f"Checkpoint does not contain EMA parameters: {checkpoint}")
 
@@ -100,6 +130,8 @@ def main(_):
         raise ValueError("--checkpoint is required")
     if FLAGS.num_samples < 1:
         raise ValueError("--num_samples must be positive")
+    if FLAGS.cpu_only:
+        jax.config.update("jax_platforms", "cpu")
 
     config = load_config(FLAGS.config)
     conditioning = config.model.get("conditioning", "class")
@@ -109,6 +141,9 @@ def main(_):
     if conditioning == "unconditional" and FLAGS.class_id != -1:
         raise ValueError("--class_id cannot be used when model.conditioning is 'unconditional'")
 
+    use_bf16 = config.training.get("use_bf16", False) and jax.devices()[0].platform == "tpu"
+    if not use_bf16:
+        config.training.use_bf16 = False
     model = _build_model(
         config,
         FLAGS.seed,
@@ -152,6 +187,10 @@ def main(_):
         cfg_scale=cfg_scale,
     )
     _save_grid(samples, FLAGS.output_path)
-    mode = f"class {FLAGS.class_id}" if conditioning == "class" and FLAGS.class_id >= 0 else conditioning
+    mode = (
+        f"class {FLAGS.class_id}"
+        if conditioning == "class" and FLAGS.class_id >= 0
+        else conditioning
+    )
     print(f"Generated {FLAGS.num_samples} Fashion MNIST samples ({mode}) on {jax.devices()[0]}.")
     print(f"Saved image grid to {FLAGS.output_path}")
