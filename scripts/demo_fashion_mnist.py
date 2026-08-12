@@ -82,13 +82,15 @@ def _make_generate(model: DiT, config: Any):
             return jnp.split(output, 2, axis=-1)[0]
         return output
 
-    def generate(class_ids, num_samples: int, inference_steps: int, cfg_scale: float, seed: int):
-        if not class_ids:
-            raise ValueError("Select at least one class label")
+    def generate(class_weights, num_samples: int, inference_steps: int, cfg_scale: float, seed: int):
+        positive_classes = [index for index, weight in enumerate(class_weights) if float(weight) > 0]
+        if not positive_classes:
+            raise ValueError("Give at least one class a positive influence")
         labels = jnp.asarray(
-            [[int(class_id) for class_id in class_ids]] * num_samples,
+            [positive_classes] * num_samples,
             dtype=jnp.int32,
         )
+        weights = jnp.asarray([float(class_weights[index]) for index in positive_classes], dtype=jnp.float32)
         samples = sampler.sample_multi_conditional(
             model_fn,
             (
@@ -100,6 +102,7 @@ def _make_generate(model: DiT, config: Any):
             jax.random.key(int(seed)),
             labels=labels,
             null_label=config.model.num_classes,
+            weights=weights,
             num_inference_steps=int(inference_steps),
             cfg_scale=float(cfg_scale),
         )
@@ -115,38 +118,74 @@ def build_app(config_path: str, checkpoint: str, seed: int):
     _restore_ema(model, checkpoint)
     generate = _make_generate(model, config)
 
-    def generate_with_caption(class_ids, num_samples, inference_steps, cfg_scale, sample_seed):
-        images = generate(class_ids, num_samples, inference_steps, cfg_scale, sample_seed)
-        names = ", ".join(CLASS_NAMES[int(class_id)] for class_id in class_ids)
-        return images, f"Blended classes: {names}"
+    def generate_with_caption(*values):
+        class_weights = values[: len(CLASS_NAMES)]
+        num_samples, inference_steps, cfg_scale, sample_seed = values[len(CLASS_NAMES) :]
+        images = generate(class_weights, num_samples, inference_steps, cfg_scale, sample_seed)
+        active = [
+            f"{CLASS_NAMES[index]} ({float(weight):.2f})"
+            for index, weight in enumerate(class_weights)
+            if float(weight) > 0
+        ]
+        return images, "Influences: " + ", ".join(active)
 
     with gr.Blocks(title="Fashion MNIST Diffusion") as app:
         gr.Markdown(
             "# Class-conditional Fashion MNIST\n"
-            "Generate images from the TPU-v3 checkpoint. Select multiple classes "
-            "to blend their classifier-free guidance directions."
+            "Generate images from the TPU-v3 checkpoint. Set each class influence "
+            "with a slider; values are normalized relative to the active classes."
         )
         gr.Markdown(
             "### Fashion MNIST class labels\n"
             + CLASS_LEGEND
         )
-        with gr.Row():
-            class_ids = gr.CheckboxGroup(
-                choices=[(f"{index}: {name}", index) for index, name in enumerate(CLASS_NAMES)],
-                value=[7],
-                label="Class labels to blend",
-            )
-            num_samples = gr.Slider(1, 16, value=8, step=1, label="Number of samples")
-        with gr.Row():
-            inference_steps = gr.Slider(10, 100, value=50, step=5, label="Denoising steps")
-            cfg_scale = gr.Slider(1.0, 5.0, value=1.5, step=0.1, label="Classifier-free guidance")
-            sample_seed = gr.Slider(0, 100000, value=0, step=1, label="Random seed")
-        generate_button = gr.Button("Generate samples", variant="primary")
-        caption = gr.Markdown("Choose a class and generate samples.")
-        gallery = gr.Gallery(label="Generated samples", columns=4, rows=4, height="auto")
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=1, min_width=280):
+                gr.Markdown("### Controls\nSet the relative influence for each class.")
+                class_sliders = []
+                for index, name in enumerate(CLASS_NAMES):
+                    class_sliders.append(
+                        gr.Slider(
+                            0.0,
+                            1.0,
+                            value=1.0 if index == 7 else 0.0,
+                            step=0.05,
+                            label=f"{index}: {name}",
+                            scale=1,
+                            min_width=180,
+                        )
+                    )
+                num_samples = gr.Slider(
+                    1, 16, value=8, step=1, label="Number of samples", scale=1, min_width=180
+                )
+                inference_steps = gr.Slider(
+                    10, 100, value=50, step=5, label="Denoising steps", scale=1, min_width=180
+                )
+                cfg_scale = gr.Slider(
+                    1.0,
+                    5.0,
+                    value=1.5,
+                    step=0.1,
+                    label="Classifier-free guidance",
+                    scale=1,
+                    min_width=180,
+                )
+                sample_seed = gr.Slider(
+                    0, 100000, value=0, step=1, label="Random seed", scale=1, min_width=180
+                )
+                generate_button = gr.Button("Generate samples", variant="primary")
+
+            with gr.Column(scale=2, min_width=520):
+                caption = gr.Markdown("Choose class influences and generate samples.")
+                gallery = gr.Gallery(
+                    label="Generated samples",
+                    columns=4,
+                    rows=4,
+                    height=720,
+                )
         generate_button.click(
             generate_with_caption,
-            inputs=[class_ids, num_samples, inference_steps, cfg_scale, sample_seed],
+            inputs=class_sliders + [num_samples, inference_steps, cfg_scale, sample_seed],
             outputs=[gallery, caption],
         )
     return app

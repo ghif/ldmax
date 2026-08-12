@@ -89,6 +89,7 @@ class DDIMSampler:
         rng_key: jax.Array,
         labels: jax.Array,
         null_label: int,
+        weights: Optional[jax.Array] = None,
         num_inference_steps: int = 50,
         cfg_scale: float = 1.5,
     ) -> jax.Array:
@@ -97,7 +98,7 @@ class DDIMSampler:
         ``labels`` has shape ``(batch, num_conditions)``. The unconditional
         prediction is combined with the mean conditional direction:
 
-        ``eps = eps_uncond + scale * mean(eps_cond - eps_uncond)``.
+        ``eps = eps_uncond + scale * sum(weights * (eps_cond - eps_uncond))``.
 
         This enables exploratory class blending with an existing checkpoint;
         it does not require retraining the model for multi-class outputs.
@@ -106,6 +107,14 @@ class DDIMSampler:
             raise ValueError("labels must have shape (batch, num_conditions)")
         if labels.shape[0] != shape[0]:
             raise ValueError("labels batch dimension must match sample shape")
+        if weights is None:
+            weights = jnp.ones((labels.shape[1],), dtype=jnp.float32)
+        weights = jnp.asarray(weights, dtype=jnp.float32)
+        if weights.ndim != 1 or weights.shape[0] != labels.shape[1]:
+            raise ValueError("weights must have one value per condition")
+        if bool(jnp.any(weights < 0)) or bool(jnp.all(weights == 0)):
+            raise ValueError("weights must be non-negative with at least one positive value")
+        weights = weights / jnp.sum(weights)
 
         _, subkey = jax.random.split(rng_key)
         x = jax.random.normal(subkey, shape)
@@ -135,7 +144,12 @@ class DDIMSampler:
             eps_all = model_fn(x_in, t_in, y_in)
             eps_uncond = eps_all[:batch_size]
             eps_cond = eps_all[batch_size:].reshape(num_conditions, batch_size, *eps_all.shape[1:])
-            eps = eps_uncond + cfg_scale * jnp.mean(eps_cond - eps_uncond[None, ...], axis=0)
+            direction = jnp.sum(
+                weights[:, None, None, None, None]
+                * (eps_cond - eps_uncond[None, ...]),
+                axis=0,
+            )
+            eps = eps_uncond + cfg_scale * direction
 
             alpha_t = get_alpha_cumprod(t_idx)
             alpha_prev = get_alpha_cumprod(prev_t_idx)
