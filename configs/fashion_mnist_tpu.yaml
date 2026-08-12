@@ -19,7 +19,7 @@ training:
   total_steps: 15000
   seed: 42
   ema_decay: 0.999
-  use_bf16: false
+  use_bf16: true
   prefetch_size: 2
 
 data:
