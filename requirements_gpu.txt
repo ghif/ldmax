@@ -19,6 +19,7 @@ tqdm
 tensorboard
 tensorboardX
 matplotlib
+gradio
 
 # Hugging Face and model serialization
 huggingface_hub>=1.5.0

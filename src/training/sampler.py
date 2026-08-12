@@ -81,3 +81,66 @@ class DDIMSampler:
             x = jnp.sqrt(alpha_prev) * pred_x0 + dir_xt
             
         return x
+
+    def sample_multi_conditional(
+        self,
+        model_fn: Callable,
+        shape: tuple,
+        rng_key: jax.Array,
+        labels: jax.Array,
+        null_label: int,
+        num_inference_steps: int = 50,
+        cfg_scale: float = 1.5,
+    ) -> jax.Array:
+        """Sample with equally weighted classifier-free class conditions.
+
+        ``labels`` has shape ``(batch, num_conditions)``. The unconditional
+        prediction is combined with the mean conditional direction:
+
+        ``eps = eps_uncond + scale * mean(eps_cond - eps_uncond)``.
+
+        This enables exploratory class blending with an existing checkpoint;
+        it does not require retraining the model for multi-class outputs.
+        """
+        if labels.ndim != 2 or labels.shape[1] < 1:
+            raise ValueError("labels must have shape (batch, num_conditions)")
+        if labels.shape[0] != shape[0]:
+            raise ValueError("labels batch dimension must match sample shape")
+
+        _, subkey = jax.random.split(rng_key)
+        x = jax.random.normal(subkey, shape)
+        indices = jnp.linspace(
+            self.num_train_timesteps - 1, 0, num_inference_steps
+        ).astype(jnp.int32)
+
+        def get_alpha_cumprod(t):
+            return jnp.where(t >= 0, self.alphas_cumprod[t], 1.0)
+
+        batch_size, num_conditions = labels.shape
+        for i in range(len(indices)):
+            t_idx = indices[i]
+            prev_t_idx = indices[i + 1] if i + 1 < len(indices) else -1
+            t = jnp.full((batch_size,), t_idx)
+
+            x_in = jnp.concatenate(
+                [x] + [x] * num_conditions,
+                axis=0,
+            )
+            t_in = jnp.tile(t, num_conditions + 1)
+            condition_labels = labels.T.reshape(-1)
+            y_in = jnp.concatenate(
+                [jnp.full((batch_size,), null_label, dtype=labels.dtype), condition_labels],
+                axis=0,
+            )
+            eps_all = model_fn(x_in, t_in, y_in)
+            eps_uncond = eps_all[:batch_size]
+            eps_cond = eps_all[batch_size:].reshape(num_conditions, batch_size, *eps_all.shape[1:])
+            eps = eps_uncond + cfg_scale * jnp.mean(eps_cond - eps_uncond[None, ...], axis=0)
+
+            alpha_t = get_alpha_cumprod(t_idx)
+            alpha_prev = get_alpha_cumprod(prev_t_idx)
+            pred_x0 = (x - jnp.sqrt(1 - alpha_t) * eps) / jnp.sqrt(alpha_t)
+            direction = jnp.sqrt(1 - alpha_prev) * eps
+            x = jnp.sqrt(alpha_prev) * pred_x0 + direction
+
+        return x
