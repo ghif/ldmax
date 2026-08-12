@@ -47,6 +47,7 @@ def _build_model(config, seed: int, label_mode: str, label_dropout_prob: float) 
         num_classes=config.model.num_classes,
         label_mode=label_mode,
         label_dropout_prob=label_dropout_prob,
+        compute_dtype=(jnp.bfloat16 if config.training.get("use_bf16", False) else None),
         learn_sigma=config.model.get("learn_sigma", False),
         rngs=nnx.Rngs(rng.next()),
     )

@@ -46,6 +46,12 @@ the model and computations on that device automatically. Select the backend
 through the JAX installation and runtime environment, for example with
 `JAX_PLATFORMS=cpu` when explicitly testing CPU execution.
 
+The TPU Fashion MNIST configuration uses conservative BF16 mixed precision:
+model parameters, optimizer state, EMA weights, normalization, diffusion
+schedules, and loss reductions remain FP32, while activations and matrix
+multiplications use BF16. This preserves the quality of the FP32 path while
+allowing TPU acceleration.
+
 ## 🏃‍♂️ Quickstart
 
 ### Training

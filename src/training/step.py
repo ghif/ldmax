@@ -33,9 +33,9 @@ def compute_loss(
     # Split key for different operations
     noise_key, time_key, model_key = jax.random.split(key, 3)
 
-    # 1. Sample noise
-    # Ensure noise matches latents dtype for MXU efficiency
-    noise = jax.random.normal(noise_key, latents.shape, dtype=latents.dtype)
+    # Keep the diffusion target and schedule in FP32 for stable loss scaling.
+    noise = jax.random.normal(noise_key, latents.shape, dtype=jnp.float32)
+    latents_fp32 = latents.astype(jnp.float32)
     t = jax.random.randint(time_key, (latents.shape[0],), 0, NUM_TRAIN_TIMESTEPS)
 
     # 2. Add noise to latents (forward diffusion)
@@ -44,10 +44,10 @@ def compute_loss(
     sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - ALPHAS_CUMPROD[t])[:, None, None, None]
 
     # Ensure constants match dtype
-    sqrt_alphas_cumprod = sqrt_alphas_cumprod.astype(latents.dtype)
-    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.astype(latents.dtype)
+    sqrt_alphas_cumprod = sqrt_alphas_cumprod.astype(jnp.float32)
+    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.astype(jnp.float32)
 
-    noisy_latents = sqrt_alphas_cumprod * latents + sqrt_one_minus_alphas_cumprod * noise
+    noisy_latents = sqrt_alphas_cumprod * latents_fp32 + sqrt_one_minus_alphas_cumprod * noise
 
     # 3. Predict noise with DiT
     model_output = model(
@@ -65,7 +65,7 @@ def compute_loss(
         pred_noise = model_output
 
     # 4. MSE Loss
-    return jnp.mean((pred_noise - noise) ** 2)
+    return jnp.mean((pred_noise.astype(jnp.float32) - noise) ** 2, dtype=jnp.float32)
 
 @nnx.jit(static_argnames="use_bf16")
 def train_step(
@@ -89,9 +89,6 @@ def train_step(
     Returns:
         Dictionary of metrics (e.g., loss).
     """
-    if use_bf16:
-        latents = latents.astype(jnp.bfloat16)
-
     def loss_fn(model):
         return compute_loss(model, latents, labels, rng_key)
 

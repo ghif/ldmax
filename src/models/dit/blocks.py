@@ -26,6 +26,7 @@ class DiTBlock(nnx.Module):
         hidden_size: int,
         num_heads: int,
         mlp_ratio: float = 4.0,
+        compute_dtype: Optional[jnp.dtype] = None,
         rngs: Optional[nnx.Rngs] = None,
     ):
         """Initialize the DiT block.
@@ -36,21 +37,23 @@ class DiTBlock(nnx.Module):
             mlp_ratio: Ratio of MLP hidden size to hidden_size.
             rngs: Random number generators.
         """
-        self.norm1 = nnx.LayerNorm(num_features=hidden_size, rngs=rngs)
+        self.norm1 = nnx.LayerNorm(num_features=hidden_size, dtype=jnp.float32, param_dtype=jnp.float32, rngs=rngs)
         self.attn = nnx.MultiHeadAttention(
             num_heads=num_heads,
             in_features=hidden_size,
             qkv_features=hidden_size,
             out_features=hidden_size,
+            dtype=compute_dtype,
+            param_dtype=jnp.float32,
             rngs=rngs,
         )
-        self.norm2 = nnx.LayerNorm(num_features=hidden_size, rngs=rngs)
+        self.norm2 = nnx.LayerNorm(num_features=hidden_size, dtype=jnp.float32, param_dtype=jnp.float32, rngs=rngs)
         
         mlp_hidden_size = int(hidden_size * mlp_ratio)
         self.mlp = nnx.Sequential(
-            nnx.Linear(hidden_size, mlp_hidden_size, rngs=rngs),
+            nnx.Linear(hidden_size, mlp_hidden_size, dtype=compute_dtype, param_dtype=jnp.float32, rngs=rngs),
             nnx.gelu,
-            nnx.Linear(mlp_hidden_size, hidden_size, rngs=rngs),
+            nnx.Linear(mlp_hidden_size, hidden_size, dtype=compute_dtype, param_dtype=jnp.float32, rngs=rngs),
         )
         
         # AdaLN modulation parameters: 6 for each block 
@@ -58,7 +61,7 @@ class DiTBlock(nnx.Module):
         # Critical: the final linear layer must be zero-initialized
         self.adaLN_modulation = nnx.Sequential(
             nnx.silu,
-            nnx.Linear(hidden_size, 6 * hidden_size, kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros, rngs=rngs)
+            nnx.Linear(hidden_size, 6 * hidden_size, dtype=compute_dtype, param_dtype=jnp.float32, kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros, rngs=rngs)
         )
 
     def __call__(self, x: jax.Array, c: jax.Array) -> jax.Array:
@@ -92,7 +95,7 @@ class DiTBlock(nnx.Module):
 class FinalLayer(nnx.Module):
     """The final layer of DiT for output projection."""
 
-    def __init__(self, hidden_size: int, patch_size: int, out_channels: int, rngs: Optional[nnx.Rngs] = None):
+    def __init__(self, hidden_size: int, patch_size: int, out_channels: int, compute_dtype: Optional[jnp.dtype] = None, rngs: Optional[nnx.Rngs] = None):
         """Initialize the final layer.
 
         Args:
@@ -101,9 +104,11 @@ class FinalLayer(nnx.Module):
             out_channels: Number of output channels (e.g., 4 for latents).
             rngs: Random number generators.
         """
-        self.norm_final = nnx.LayerNorm(num_features=hidden_size, rngs=rngs)
+        self.norm_final = nnx.LayerNorm(num_features=hidden_size, dtype=jnp.float32, param_dtype=jnp.float32, rngs=rngs)
         self.linear = nnx.Linear(
             hidden_size, patch_size * patch_size * out_channels, 
+            dtype=compute_dtype,
+            param_dtype=jnp.float32,
             kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros, 
             rngs=rngs
         )
@@ -111,6 +116,8 @@ class FinalLayer(nnx.Module):
             nnx.silu,
             nnx.Linear(
                 hidden_size, 2 * hidden_size, 
+                dtype=compute_dtype,
+                param_dtype=jnp.float32,
                 kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros, 
                 rngs=rngs
             )

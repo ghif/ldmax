@@ -262,6 +262,7 @@ def main(_):
     sample_artifact_dir = os.path.join(output_dir, "checkpoints", "samples")
     os.makedirs(sample_artifact_dir, exist_ok=True)
 
+    compute_dtype = jnp.bfloat16 if use_bf16 else None
     model = DiT(
         input_size=config.model.input_size,
         patch_size=config.model.patch_size,
@@ -273,16 +274,9 @@ def main(_):
         label_mode=label_mode,
         label_dropout_prob=label_dropout_prob,
         learn_sigma=config.model.get("learn_sigma", False),
+        compute_dtype=compute_dtype,
         rngs=nnx.Rngs(rng.next()),
     )
-    if use_bf16:
-        model_state = jax.tree.map(
-            lambda value: value.astype(jnp.bfloat16)
-            if isinstance(value, jax.Array) and value.dtype == jnp.float32
-            else value,
-            nnx.state(model),
-        )
-        nnx.update(model, model_state)
     optimizer = nnx.Optimizer(
         model,
         optax.adamw(
@@ -303,6 +297,7 @@ def main(_):
         label_mode=label_mode,
         label_dropout_prob=label_dropout_prob,
         learn_sigma=config.model.get("learn_sigma", False),
+        compute_dtype=compute_dtype,
         rngs=nnx.Rngs(rng.next()),
     )
     if resume_root is not None:

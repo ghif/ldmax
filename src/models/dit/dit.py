@@ -47,12 +47,12 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, grid):
 class TimestepEmbedder(nnx.Module):
     """Embeds scalar timesteps into vector embeddings."""
 
-    def __init__(self, hidden_size: int, frequency_embedding_size: int = 256, rngs: Optional[nnx.Rngs] = None):
+    def __init__(self, hidden_size: int, frequency_embedding_size: int = 256, compute_dtype: Optional[jnp.dtype] = None, rngs: Optional[nnx.Rngs] = None):
         """Initialize the timestep embedder."""
         self.mlp = nnx.Sequential(
-            nnx.Linear(frequency_embedding_size, hidden_size, rngs=rngs),
+            nnx.Linear(frequency_embedding_size, hidden_size, dtype=compute_dtype, param_dtype=jnp.float32, rngs=rngs),
             nnx.silu,
-            nnx.Linear(hidden_size, hidden_size, rngs=rngs),
+            nnx.Linear(hidden_size, hidden_size, dtype=compute_dtype, param_dtype=jnp.float32, rngs=rngs),
         )
         self.frequency_embedding_size = frequency_embedding_size
 
@@ -85,6 +85,7 @@ class LabelEmbedder(nnx.Module):
         dropout_prob: float,
         label_mode: str = "class",
         label_dim: Optional[int] = None,
+        compute_dtype: Optional[jnp.dtype] = None,
         rngs: Optional[nnx.Rngs] = None,
     ):
         """Initialize the label embedder."""
@@ -98,6 +99,8 @@ class LabelEmbedder(nnx.Module):
             self.embedding_table = nnx.Embed(
                 num_classes + (1 if use_cfg_embedding else 0),
                 hidden_size,
+                dtype=compute_dtype,
+                param_dtype=jnp.float32,
                 rngs=rngs,
             )
             self.label_dim = None
@@ -106,7 +109,13 @@ class LabelEmbedder(nnx.Module):
             if label_dim is None:
                 raise ValueError("label_dim is required when label_mode='attributes'")
             self.label_dim = label_dim
-            self.proj = nnx.Linear(label_dim, hidden_size, rngs=rngs)
+            self.proj = nnx.Linear(
+                label_dim,
+                hidden_size,
+                dtype=compute_dtype,
+                param_dtype=jnp.float32,
+                rngs=rngs,
+            )
             self.embedding_table = None
         elif label_mode == "none":
             self.label_dim = None
@@ -167,6 +176,7 @@ class DiT(nnx.Module):
         label_dim: Optional[int] = None,
         label_dropout_prob: float = 0.1,
         learn_sigma: bool = False,
+        compute_dtype: Optional[jnp.dtype] = None,
         rngs: Optional[nnx.Rngs] = None,
     ):
         """Initialize DiT."""
@@ -174,12 +184,19 @@ class DiT(nnx.Module):
         self.in_channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
+        self.compute_dtype = compute_dtype
         
         # Patch embedding
-        self.x_embedder = nnx.Linear(patch_size * patch_size * in_channels, hidden_size, rngs=rngs)
+        self.x_embedder = nnx.Linear(
+            patch_size * patch_size * in_channels,
+            hidden_size,
+            dtype=compute_dtype,
+            param_dtype=jnp.float32,
+            rngs=rngs,
+        )
         
         # Timestep and label embedding
-        self.t_embedder = TimestepEmbedder(hidden_size, rngs=rngs)
+        self.t_embedder = TimestepEmbedder(hidden_size, compute_dtype=compute_dtype, rngs=rngs)
         self.y_embedder = LabelEmbedder(
             num_classes,
             hidden_size,
@@ -187,6 +204,7 @@ class DiT(nnx.Module):
             label_mode=label_mode,
             label_dim=label_dim,
             rngs=rngs,
+            compute_dtype=compute_dtype,
         )
         
         # Positional embedding (fixed 2D sin-cos)
@@ -196,12 +214,12 @@ class DiT(nnx.Module):
         
         # DiT blocks
         self.blocks = nnx.List([
-            DiTBlock(hidden_size, num_heads, mlp_ratio, rngs=rngs)
+            DiTBlock(hidden_size, num_heads, mlp_ratio, compute_dtype=compute_dtype, rngs=rngs)
             for _ in range(depth)
         ])
         
         # Final layer
-        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels, rngs=rngs)
+        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels, compute_dtype=compute_dtype, rngs=rngs)
 
     def unpatchify(self, x: jax.Array) -> jax.Array:
         """Convert patched representation back to images."""
@@ -236,7 +254,13 @@ class DiT(nnx.Module):
         """
         # Patchify and embed
         x = self.patchify(x)
-        x = self.x_embedder(x) + self.pos_embed
+        if self.compute_dtype is not None:
+            x = x.astype(self.compute_dtype)
+        x = self.x_embedder(x)
+        pos_embed = self.pos_embed
+        if self.compute_dtype is not None:
+            pos_embed = pos_embed.astype(self.compute_dtype)
+        x = x + pos_embed
         
         # Embed conditioning
         t_emb = self.t_embedder(t)
