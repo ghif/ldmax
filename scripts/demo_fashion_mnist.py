@@ -129,11 +129,23 @@ def build_app(config_path: str, checkpoint: str, seed: int):
         ]
         return images, "Influences: " + ", ".join(active)
 
-    with gr.Blocks(title="Fashion MNIST Diffusion") as app:
+    with gr.Blocks(title="Fashion MNIST Diffusion Image Generator") as app:
         gr.Markdown(
-            "# Class-conditional Fashion MNIST\n"
-            "Generate images from the TPU-v3 checkpoint. Set each class influence "
-            "with a slider; values are normalized relative to the active classes."
+            "# Fashion MNIST Diffusion Image Generator\n"
+            "Generate **28×28 grayscale Fashion MNIST images** with a class-conditioned "
+            "diffusion model. The model starts from random noise and progressively "
+            "denoises it into an image guided by the selected class labels. Adjust "
+            "each class influence to generate a single category or blend multiple "
+            "categories."
+        )
+        gr.Markdown(
+            "### Model configuration\n"
+            "This demo uses a raw-pixel **DiT (Diffusion Transformer)** model, so no "
+            "VAE encoder or decoder is involved. The network has **6 transformer "
+            "blocks**, a **192-dimensional hidden size**, **6 attention heads**, "
+            "2×2 input patches, and 10 class labels**. It was trained for "
+            "**30,000 steps** on a **Google Cloud TPU v6e-1**, using BF16 activation "
+            "compute with FP32-sensitive parameters and statistics preserved."
         )
         gr.Markdown(
             "### Fashion MNIST class labels\n"
@@ -193,10 +205,10 @@ def build_app(config_path: str, checkpoint: str, seed: int):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/fashion_mnist_tpu.yaml")
+    parser.add_argument("--config", default="configs/fashion_mnist_tpu_v4.yaml")
     parser.add_argument(
         "--checkpoint",
-        default="gs://diffjax/models/fashion-mnist_ccond_tpu-v3_12-08-2026/checkpoints",
+        default="gs://diffjax/models/fashion-mnist_ccond_tpu-v4_12-08-2026/checkpoints",
     )
     parser.add_argument("--seed", type=int, default=0, help="Model initialization seed.")
     parser.add_argument("--host", default="127.0.0.1")
