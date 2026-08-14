@@ -1,0 +1,31 @@
+# Native-pixel CIFAR10 DiT. No VAE is involved.
+dataset: "cifar10"
+
+model:
+  conditioning: "class"  # Change to "unconditional" for unconditional training.
+  input_size: 32
+  patch_size: 2
+  in_channels: 3
+  hidden_size: 256
+  depth: 8
+  num_heads: 8
+  num_classes: 10
+  learn_sigma: false
+
+training:
+  learning_rate: 0.0002
+  weight_decay: 0.01
+  batch_size: 128
+  total_steps: 350000
+  seed: 42
+  ema_decay: 0.9999
+  use_bf16: true
+  prefetch_size: 2
+
+evaluation:
+  log_interval: 100
+  checkpoint_interval: 5000
+  sampling_interval: 1000
+  sample_count: 16
+  num_inference_steps: 50
+  cfg_scale: 1.5

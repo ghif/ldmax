@@ -75,6 +75,33 @@ python -m scripts.train_fashion_mnist \
 
 For a two-step smoke run, use `configs/fashion_mnist_test.yaml`.
 
+**CIFAR10 native-pixel diffusion:**
+
+The native-pixel CIFAR10 workflow trains directly on normalized `32 × 32 × 3`
+RGB images and does not load or call a VAE. It supports both class-conditional
+and unconditional DiT models; set `model.conditioning` in the config to select
+the mode.
+
+```bash
+python -m scripts.train_cifar10 \
+    --config configs/cifar10_pixel.yaml \
+    --output_dir ./outputs/cifar10_pixel
+```
+
+Use `configs/cifar10_pixel_test.yaml` for a two-step smoke run. To generate
+class-conditional samples from an EMA checkpoint:
+
+```bash
+python -m scripts.sample_cifar10 \
+    --config configs/cifar10_pixel.yaml \
+    --checkpoint ./outputs/cifar10_pixel/checkpoints/5000 \
+    --class_id 3 \
+    --output_path ./samples/cifar10.png
+```
+
+Pixel-space sampling clips predicted clean images to `[-1, 1]`; the existing
+latent-VAE sampling workflows retain their previous behavior.
+
 To sample from a saved Fashion MNIST checkpoint and write a grayscale image
 grid:
 

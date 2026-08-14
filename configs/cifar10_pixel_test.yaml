@@ -1,0 +1,30 @@
+dataset: "cifar10"
+
+model:
+  conditioning: "class"
+  input_size: 32
+  patch_size: 2
+  in_channels: 3
+  hidden_size: 64
+  depth: 2
+  num_heads: 2
+  num_classes: 10
+  learn_sigma: false
+
+training:
+  learning_rate: 0.0002
+  weight_decay: 0.01
+  batch_size: 4
+  total_steps: 2
+  seed: 42
+  ema_decay: 0.999
+  use_bf16: false
+  prefetch_size: 0
+
+evaluation:
+  log_interval: 1
+  checkpoint_interval: 1
+  sampling_interval: 1
+  sample_count: 4
+  num_inference_steps: 2
+  cfg_scale: 1.5

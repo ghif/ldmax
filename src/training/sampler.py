@@ -23,7 +23,8 @@ class DDIMSampler:
         num_inference_steps: int = 50,
         y: Optional[jax.Array] = None,
         null_y: Optional[jax.Array] = None,
-        cfg_scale: float = 1.5
+        cfg_scale: float = 1.5,
+        clip_denoised: bool = False,
     ) -> jax.Array:
         """Sample from the model using DDIM.
 
@@ -35,6 +36,7 @@ class DDIMSampler:
             y: Labels for conditioning.
             null_y: Null labels for CFG.
             cfg_scale: Classifier-free guidance scale.
+            clip_denoised: Clip predicted clean samples to ``[-1, 1]``.
 
         Returns:
             Sampled latents.
@@ -73,6 +75,12 @@ class DDIMSampler:
             # DDIM step (deterministic)
             # 1. Predict x0
             pred_x0 = (x - jnp.sqrt(1 - alpha_t) * eps) / jnp.sqrt(alpha_t)
+
+            if clip_denoised:
+                pred_x0 = jnp.clip(pred_x0, -1.0, 1.0)
+                # Recompute the direction from the clipped clean sample so
+                # the DDIM transition remains consistent with the bound.
+                eps = (x - jnp.sqrt(alpha_t) * pred_x0) / jnp.sqrt(1 - alpha_t)
             
             # 2. Direction pointing to xt
             dir_xt = jnp.sqrt(1 - alpha_prev) * eps
@@ -92,6 +100,7 @@ class DDIMSampler:
         weights: Optional[jax.Array] = None,
         num_inference_steps: int = 50,
         cfg_scale: float = 1.5,
+        clip_denoised: bool = False,
     ) -> jax.Array:
         """Sample with equally weighted classifier-free class conditions.
 
@@ -154,6 +163,9 @@ class DDIMSampler:
             alpha_t = get_alpha_cumprod(t_idx)
             alpha_prev = get_alpha_cumprod(prev_t_idx)
             pred_x0 = (x - jnp.sqrt(1 - alpha_t) * eps) / jnp.sqrt(alpha_t)
+            if clip_denoised:
+                pred_x0 = jnp.clip(pred_x0, -1.0, 1.0)
+                eps = (x - jnp.sqrt(alpha_t) * pred_x0) / jnp.sqrt(1 - alpha_t)
             direction = jnp.sqrt(1 - alpha_prev) * eps
             x = jnp.sqrt(alpha_prev) * pred_x0 + direction
 
