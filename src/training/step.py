@@ -41,8 +41,9 @@ def compute_loss(
 
     # 2. Add noise to latents (forward diffusion)
     # Standard linear schedule
-    sqrt_alphas_cumprod = jnp.sqrt(ALPHAS_CUMPROD[t])[:, None, None, None]
-    sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - ALPHAS_CUMPROD[t])[:, None, None, None]
+    alphas_cumprod = jnp.asarray(ALPHAS_CUMPROD, dtype=jnp.float32)
+    sqrt_alphas_cumprod = jnp.sqrt(alphas_cumprod[t])[:, None, None, None]
+    sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - alphas_cumprod[t])[:, None, None, None]
 
     # Ensure constants match dtype
     sqrt_alphas_cumprod = sqrt_alphas_cumprod.astype(jnp.float32)
