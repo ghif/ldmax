@@ -1,0 +1,1 @@
+nohup PYTHONPATH=. python scripts/train_cifar10.py --config configs/cifar10_pixel.yaml --output_dir models/cifar10_pixel_ccond_tpu_15-08-2026 > cifar10_pixel_ccond_tpu_15-08-2026.log 2>&1 &

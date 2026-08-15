@@ -29,13 +29,16 @@ from src.utils.prefetch import DevicePrefetcher
 from src.utils.rng import RNGManager
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string("config", "configs/fashion_mnist.yaml", "Path to the config file.")
-flags.DEFINE_string("output_dir", "", "Directory for logs and checkpoints.")
-flags.DEFINE_string(
-    "resume_from",
-    "",
-    "Run directory or checkpoint directory from which to resume training.",
-)
+if "config" not in FLAGS:
+    flags.DEFINE_string("config", "configs/fashion_mnist.yaml", "Path to the config file.")
+if "output_dir" not in FLAGS:
+    flags.DEFINE_string("output_dir", "", "Directory for logs and checkpoints.")
+if "resume_from" not in FLAGS:
+    flags.DEFINE_string(
+        "resume_from",
+        "",
+        "Run directory or checkpoint directory from which to resume training.",
+    )
 
 
 def _save_sample_grid(samples: jax.Array, path: str) -> None:

@@ -73,3 +73,35 @@ def test_ddim_pixel_clipping_keeps_clean_prediction_bounded():
     assert result.shape == (1, 4, 4, 3)
     assert jnp.all(result <= 1.0)
     assert jnp.all(result >= -1.0)
+
+
+def test_cifar10_resolve_resume_checkpoint(tmp_path, monkeypatch):
+    from pathlib import Path
+    from src.training.cifar10_runner import _resolve_resume_checkpoint
+
+    run_dir = tmp_path / "cifar_run"
+    (run_dir / "checkpoints").mkdir(parents=True)
+
+    class FakeCheckpointManager:
+        def __init__(self, directory):
+            assert Path(directory) == run_dir / "checkpoints"
+
+        def latest_step(self):
+            return 5000
+
+    monkeypatch.setattr(
+        "src.training.cifar10_runner.CheckpointManager",
+        FakeCheckpointManager,
+    )
+
+    checkpoint_root, step = _resolve_resume_checkpoint(str(run_dir))
+    assert checkpoint_root == (run_dir / "checkpoints").resolve()
+    assert step == 5000
+
+
+def test_cifar10_resolve_rejects_unrecognized_path(tmp_path):
+    from src.training.cifar10_runner import _resolve_resume_checkpoint
+
+    with pytest.raises(ValueError, match="--resume_from"):
+        _resolve_resume_checkpoint(str(tmp_path))
+

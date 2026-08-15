@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from collections.abc import Mapping
 from math import ceil, sqrt
 from pathlib import Path
@@ -108,16 +109,25 @@ def _checkpoint_value(state, path):
     return value["value"] if isinstance(value, Mapping) and "value" in value else value
 
 
-def _restore_nnx_state(target_state, checkpoint_state, name: str) -> None:
+def _validate_nnx_state(target_state, checkpoint_state, name: str) -> None:
     for path, variable in zip(target_state.flat_state().paths, target_state.flat_state().leaves):
         try:
             value = _checkpoint_value(checkpoint_state, path)
         except KeyError as error:
             raise ValueError(f"Checkpoint {name} is missing state path {path}") from error
         if hasattr(value, "shape") and value.shape != variable.value.shape:
-            raise ValueError(f"Checkpoint {name} shape mismatch at {path}")
-        if hasattr(value, "dtype") and jnp.issubdtype(variable.value.dtype, jnp.floating):
-            value = value.astype(variable.value.dtype)
+            raise ValueError(
+                f"Checkpoint {name} shape mismatch at {path}: "
+                f"checkpoint={value.shape}, config={variable.value.shape}"
+            )
+
+
+def _restore_nnx_state(target_state, checkpoint_state, name: str) -> None:
+    for path, variable in zip(target_state.flat_state().paths, target_state.flat_state().leaves):
+        value = _checkpoint_value(checkpoint_state, path)
+        if hasattr(value, "dtype") and hasattr(variable.value, "dtype"):
+            if jnp.issubdtype(variable.value.dtype, jnp.floating):
+                value = value.astype(variable.value.dtype)
         variable.value = value
 
 
@@ -134,6 +144,9 @@ def _restore_training_state(model, optimizer, ema, checkpoint_state, conditionin
         raise ValueError(
             "Checkpoint conditioning does not match config: expected unconditional model"
         )
+    _validate_nnx_state(nnx.state(model), checkpoint_state["model"], "model")
+    _validate_nnx_state(nnx.state(optimizer), checkpoint_state["opt"], "optimizer")
+    _validate_nnx_state(ema.ema_state, checkpoint_state["ema"], "EMA")
     _restore_nnx_state(nnx.state(model), checkpoint_state["model"], "model")
     _restore_nnx_state(nnx.state(optimizer), checkpoint_state["opt"], "optimizer")
     _restore_nnx_state(ema.ema_state, checkpoint_state["ema"], "EMA")
@@ -247,8 +260,9 @@ def main(_):
         if checkpoint_state is None:
             raise ValueError(f"Unable to restore checkpoint step {restored_step}")
         _restore_training_state(model, optimizer, ema, checkpoint_state, conditioning)
-        if isinstance(checkpoint_state.get("rng"), dict):
-            rng.restore(checkpoint_state["rng"]["key"])
+        rng_state = checkpoint_state.get("rng")
+        if isinstance(rng_state, Mapping) and "key" in rng_state:
+            rng.restore(rng_state["key"])
         else:
             rng = RNGManager.from_seed_and_step(config.training.seed, restored_step)
 
@@ -287,45 +301,109 @@ def main(_):
     trainlog = open(log_path, "w", encoding="utf-8")
 
     def emit(message: str) -> None:
+        """Write the same human-readable message to the terminal and log file."""
         print(message, flush=True)
         trainlog.write(message + "\n")
         trainlog.flush()
 
     emit(f"Using device: {jax.devices()[0]}")
-    emit(f"Training CIFAR10 directly on 32x32x3 pixels; conditioning={conditioning}.")
+    emit("Training directly on 32x32x3 pixels; no VAE is used.")
     if resume_root is not None:
         emit(f"Resuming from {resume_root} at checkpoint step {restored_step}.")
+        if checkpoint_state is not None and not checkpoint_has_rng:
+            emit("Checkpoint has no RNG state; using deterministic seed-and-step fallback.")
+    emit(f"Starting training for {config.training.total_steps} steps...")
+    if resume_root is not None and restored_step >= config.training.total_steps:
+        emit("Checkpoint already reaches the configured target; no training steps to run.")
+
+    training_start = time.perf_counter()
     latest_validation_loss = None
+    data_wait_duration = 0.0
+    ema_update_duration = 0.0
+    sampling_duration = 0.0
+    gcs_sync_duration = 0.0
+
     try:
         for step in range(restored_step, config.training.total_steps):
+            data_wait_start = time.perf_counter()
             batch = next(data_iter)
+            data_wait_duration = time.perf_counter() - data_wait_start
+            train_step_start = time.perf_counter()
             metrics = train_step(
-                model, optimizer, batch["image"], batch["label"], rng.next(), use_bf16=use_bf16
+                model,
+                optimizer,
+                batch["image"],
+                batch["label"],
+                rng.next(),
+                use_bf16=use_bf16,
             )
+            train_dispatch_duration = time.perf_counter() - train_step_start
+            ema_start = time.perf_counter()
             ema.update(model)
+            ema_update_duration = time.perf_counter() - ema_start
 
             if step % config.evaluation.log_interval == 0:
+                loss = float(metrics["loss"])
+                train_step_duration = time.perf_counter() - train_step_start
                 validation_batch = next(validation_iter)
-                latest_validation_loss = float(
+                validation_step_start = time.perf_counter()
+                validation_loss = float(
                     validation_step(
-                        model, validation_batch["image"], validation_batch["label"], rng.next()
+                        model,
+                        validation_batch["image"],
+                        validation_batch["label"],
+                        rng.next(),
                     )
                 )
+                latest_validation_loss = validation_loss
+                validation_step_duration = time.perf_counter() - validation_step_start
+                batch_size = batch["image"].shape[0]
+                validation_batch_size = validation_batch["image"].shape[0]
+                train_steps_per_sec = 1.0 / max(train_step_duration, 1e-12)
+                validation_steps_per_sec = 1.0 / max(validation_step_duration, 1e-12)
+                train_samples_per_sec = batch_size * train_steps_per_sec
+                validation_samples_per_sec = validation_batch_size * validation_steps_per_sec
+                elapsed_sec = time.perf_counter() - training_start
+                progress_percent = 100.0 * (step + 1) / config.training.total_steps
                 logger.log_scalars(
                     step,
                     {
-                        "train/loss": float(metrics["loss"]),
-                        "validation/loss": latest_validation_loss,
+                        "train/loss": loss,
+                        "validation/loss": validation_loss,
+                        "performance/train_step_sec": train_step_duration,
+                        "performance/train_steps_per_sec": train_steps_per_sec,
+                        "performance/train_samples_per_sec": train_samples_per_sec,
+                        "performance/data_wait_sec": data_wait_duration,
+                        "performance/train_dispatch_sec": train_dispatch_duration,
+                        "performance/ema_update_sec": ema_update_duration,
+                        "performance/validation_step_sec": validation_step_duration,
+                        "performance/validation_steps_per_sec": validation_steps_per_sec,
+                        "performance/validation_samples_per_sec": validation_samples_per_sec,
+                        "performance/sampling_sec": sampling_duration,
+                        "performance/gcs_sync_sec": gcs_sync_duration,
                     },
                 )
                 logger.flush()
                 emit(
                     f"step={step + 1:05d}/{config.training.total_steps:05d} "
-                    f"train_loss={float(metrics['loss']):.6f} "
-                    f"validation_loss={latest_validation_loss:.6f}"
+                    f"progress={progress_percent:.2f}% train_loss={loss:.6f} "
+                    f"validation_loss={validation_loss:.6f} "
+                    f"train_step_sec={train_step_duration:.6f} "
+                    f"train_steps_per_sec={train_steps_per_sec:.6f} "
+                    f"train_samples_per_sec={train_samples_per_sec:.6f} "
+                    f"data_wait_sec={data_wait_duration:.6f} "
+                    f"train_dispatch_sec={train_dispatch_duration:.6f} "
+                    f"ema_update_sec={ema_update_duration:.6f} "
+                    f"validation_step_sec={validation_step_duration:.6f} "
+                    f"validation_steps_per_sec={validation_steps_per_sec:.6f} "
+                    f"validation_samples_per_sec={validation_samples_per_sec:.6f} "
+                    f"sampling_sec={sampling_duration:.6f} "
+                    f"gcs_sync_sec={gcs_sync_duration:.6f} "
+                    f"elapsed_sec={elapsed_sec:.6f}"
                 )
 
             if step % config.evaluation.sampling_interval == 0:
+                sampling_start = time.perf_counter()
                 nnx.update(sampling_model, ema.ema_state)
                 count = config.evaluation.get("sample_count", 16)
                 labels = jnp.arange(count, dtype=jnp.int32) % config.model.num_classes
@@ -336,31 +414,44 @@ def main(_):
                 )
                 samples = sampler.sample(
                     lambda x, t, y: model_fn(sampling_model, x, t, y),
-                    (count, 32, 32, 3),
+                    (
+                        count,
+                        config.model.input_size,
+                        config.model.input_size,
+                        config.model.in_channels,
+                    ),
                     rng.next(),
                     num_inference_steps=config.evaluation.get("num_inference_steps", 50),
                     y=labels,
                     null_y=null_labels,
-                    cfg_scale=config.evaluation.get("cfg_scale", 1.5)
-                    if conditioning == "class"
-                    else 1.0,
+                    cfg_scale=(
+                        config.evaluation.get("cfg_scale", 1.5)
+                        if conditioning == "class"
+                        else 1.0
+                    ),
                     clip_denoised=True,
                 )
                 images = (samples + 1.0).clip(0.0, 2.0) / 2.0
                 logger.log_images(step, "train/samples", images)
                 _save_sample_grid(images, os.path.join(sample_dir, f"samples_step_{step:06d}.png"))
                 logger.flush()
+                sampling_duration = time.perf_counter() - sampling_start
 
-            if (
+            should_checkpoint = (
                 step % config.evaluation.checkpoint_interval == 0 and step > 0
-            ) or step == config.training.total_steps - 1:
-                if latest_validation_loss is None:
+            ) or step == config.training.total_steps - 1
+            if should_checkpoint:
+                if step % config.evaluation.log_interval != 0:
                     validation_batch = next(validation_iter)
                     latest_validation_loss = float(
                         validation_step(
-                            model, validation_batch["image"], validation_batch["label"], rng.next()
+                            model,
+                            validation_batch["image"],
+                            validation_batch["label"],
+                            rng.next(),
                         )
                     )
+                gcs_sync_start = time.perf_counter()
                 checkpointer.save(
                     step,
                     {
@@ -371,6 +462,7 @@ def main(_):
                     },
                     metrics={"validation_loss": latest_validation_loss},
                 )
+                gcs_sync_duration = time.perf_counter() - gcs_sync_start
         emit("Training complete.")
     finally:
         logger.close()
