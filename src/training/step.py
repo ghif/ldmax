@@ -4,11 +4,12 @@ from typing import Any, Dict
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 
 NUM_TRAIN_TIMESTEPS = 1000
-BETAS = jnp.linspace(0.0001, 0.02, NUM_TRAIN_TIMESTEPS)
-ALPHAS_CUMPROD = jnp.cumprod(1.0 - BETAS)
+BETAS = np.linspace(0.0001, 0.02, NUM_TRAIN_TIMESTEPS)
+ALPHAS_CUMPROD = np.cumprod(1.0 - BETAS)
 
 
 def compute_loss(
