@@ -186,8 +186,7 @@ def main(_):
                 shuffle=True,
                 seed=config.training.seed,
                 target_size=config.data.image_size,
-                dataset_name=getattr(config.data, "dataset_name", "flwrlabs/celeba"),
-                dataset_config=getattr(config.data, "dataset_config", "img_align+identity+attr")
+                dataset_name=getattr(config.data, "dataset_name", "gs://diffjax/datasets/celeba"),
             )
         else:
             raise ValueError(f"Unknown dataset: {config.dataset}")

@@ -311,8 +311,7 @@ def main(_):
         shuffle=True,
         seed=config.training.seed,
         target_size=config.data.image_size,
-        dataset_name=getattr(config.data, "dataset_name", "flwrlabs/celeba"),
-        dataset_config=getattr(config.data, "dataset_config", "img_align+identity+attr"),
+        dataset_name=getattr(config.data, "dataset_name", "gs://diffjax/datasets/celeba"),
     )
     validation_data = get_celeba_dataset(
         batch_size=config.training.batch_size,
@@ -320,8 +319,7 @@ def main(_):
         shuffle=False,
         seed=config.training.seed,
         target_size=config.data.image_size,
-        dataset_name=getattr(config.data, "dataset_name", "flwrlabs/celeba"),
-        dataset_config=getattr(config.data, "dataset_config", "img_align+identity+attr"),
+        dataset_name=getattr(config.data, "dataset_name", "gs://diffjax/datasets/celeba"),
     )
     prefetch_size = config.training.get("prefetch_size", 2)
     if prefetch_size > 0:

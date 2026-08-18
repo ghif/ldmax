@@ -27,8 +27,7 @@ training:
 
 data:
   image_size: 256
-  dataset_name: "flwrlabs/celeba"
-  dataset_config: "img_align+identity+attr"
+  dataset_name: "gs://diffjax/datasets/celeba"
 
 evaluation:
   log_interval: 200
