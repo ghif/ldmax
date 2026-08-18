@@ -1,3 +1,4 @@
+# Test configuration for quick CelebA Latent DiT verification.
 dataset: "celeba"
 
 model:
@@ -10,6 +11,7 @@ model:
   num_classes: 40     # Number of CelebA binary attributes
   label_mode: "attributes"
   label_dim: 40
+  learn_sigma: false
 
 training:
   learning_rate: 0.0001
@@ -18,7 +20,8 @@ training:
   total_steps: 2
   seed: 42
   ema_decay: 0.999
-  mixed_precision: true
+  use_bf16: false
+  prefetch_size: 1
 
 data:
   image_size: 256     # Resolution for CelebA loader (center cropped)
@@ -29,3 +32,6 @@ evaluation:
   log_interval: 1
   checkpoint_interval: 1
   sampling_interval: 1
+  sample_count: 4
+  num_inference_steps: 2
+  cfg_scale: 4.0

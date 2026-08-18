@@ -1,4 +1,4 @@
-"""Interactive Gradio demo for class-conditional Fashion MNIST sampling."""
+"""Interactive Gradio demo for class-conditional CIFAR-10 sampling."""
 
 import argparse
 import sys
@@ -21,23 +21,23 @@ except ImportError:  # pragma: no cover - exercised by the CLI
 from flax import nnx
 
 from src.models.dit.dit import DiT, resolve_conditioning_mode
-from src.sampling.fashion_mnist import _restore_ema
+from src.sampling.cifar10 import _restore_ema
 from src.training.sampler import DDIMSampler
 from src.utils.config import load_config
 from src.utils.rng import RNGManager
 
 
 CLASS_NAMES = [
-    "T-shirt/top",
-    "Trouser",
-    "Pullover",
-    "Dress",
-    "Coat",
-    "Sandal",
-    "Shirt",
-    "Sneaker",
-    "Bag",
-    "Ankle boot",
+    "airplane",
+    "automobile",
+    "bird",
+    "cat",
+    "deer",
+    "dog",
+    "frog",
+    "horse",
+    "ship",
+    "truck",
 ]
 
 CLASS_LEGEND = " | ".join(
@@ -49,7 +49,7 @@ def _build_demo_model(config: Any, seed: int) -> DiT:
     """Build the checkpoint-compatible model for the active JAX backend."""
     conditioning = config.model.get("conditioning", "class")
     if conditioning != "class":
-        raise ValueError("This demo requires a class-conditioned Fashion MNIST model")
+        raise ValueError("This demo requires a class-conditioned CIFAR-10 model")
     use_bf16 = config.training.get("use_bf16", False)
     use_bf16 = use_bf16 and jax.devices()[0].platform == "tpu"
     config.training.use_bf16 = use_bf16
@@ -70,9 +70,9 @@ def _build_demo_model(config: Any, seed: int) -> DiT:
 
 
 def _to_images(samples: jax.Array) -> list[np.ndarray]:
-    """Convert normalized NHWC samples to Gradio-compatible grayscale images."""
+    """Convert normalized NHWC samples to Gradio-compatible RGB images."""
     images = np.asarray((samples + 1.0).clip(0.0, 2.0) / 2.0)
-    return [(image[..., 0] * 255.0).round().astype(np.uint8) for image in images]
+    return [(image[..., :3] * 255.0).round().astype(np.uint8) for image in images]
 
 
 def _make_generate(model: DiT, config: Any):
@@ -108,6 +108,7 @@ def _make_generate(model: DiT, config: Any):
             weights=weights,
             num_inference_steps=int(inference_steps),
             cfg_scale=float(cfg_scale),
+            clip_denoised=True,
         )
         return _to_images(samples)
 
@@ -137,10 +138,10 @@ def build_app(config_path: str, checkpoint: str, seed: int):
         ]
         return images, "Influences: " + ", ".join(active)
 
-    with gr.Blocks(title="Fashion MNIST Diffusion Image Generator") as app:
+    with gr.Blocks(title="CIFAR-10 Diffusion Image Generator") as app:
         gr.Markdown(
-            "# Fashion MNIST Diffusion Image Generator\n"
-            "Generate **28×28 grayscale Fashion MNIST images** with a class-conditioned "
+            "# CIFAR-10 Diffusion Image Generator\n"
+            "Generate **32×32 RGB CIFAR-10 images** with a class-conditioned "
             "diffusion model. The model starts from random noise and progressively "
             "denoises it into an image guided by the selected class labels. Adjust "
             "each class influence to generate a single category or blend multiple "
@@ -149,14 +150,14 @@ def build_app(config_path: str, checkpoint: str, seed: int):
         gr.Markdown(
             "### Model configuration\n"
             "This demo uses a raw-pixel **DiT (Diffusion Transformer)** model, so no "
-            "VAE encoder or decoder is involved. The network has **6 transformer "
-            "blocks**, a **192-dimensional hidden size**, **6 attention heads**, "
-            "2×2 input patches, and 10 class labels**. It was trained for "
-            "**30,000 steps** on a **Google Cloud TPU v6e-1**, using BF16 activation "
-            "compute with FP32-sensitive parameters and statistics preserved."
+            "VAE encoder or decoder is involved. The network has **8 transformer "
+            "blocks**, a **256-dimensional hidden size**, **8 attention heads**, "
+            "2×2 input patches, and 10 class labels. It was trained on **CIFAR-10 "
+            "(32×32×3)** on a **Google Cloud TPU**, using BF16 activation compute "
+            "with FP32-sensitive parameters and statistics preserved."
         )
         gr.Markdown(
-            "### Fashion MNIST class labels\n"
+            "### CIFAR-10 class labels\n"
             + CLASS_LEGEND
         )
         with gr.Row(equal_height=False):
@@ -168,7 +169,7 @@ def build_app(config_path: str, checkpoint: str, seed: int):
                         gr.Slider(
                             0.0,
                             1.0,
-                            value=1.0 if index == 7 else 0.0,
+                            value=1.0 if index == 0 else 0.0,
                             step=0.05,
                             label=f"{index}: {name}",
                             scale=1,
@@ -213,10 +214,10 @@ def build_app(config_path: str, checkpoint: str, seed: int):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/fashion_mnist_tpu_v4.yaml")
+    parser.add_argument("--config", default="configs/cifar10_pixel.yaml")
     parser.add_argument(
         "--checkpoint",
-        default="gs://diffjax/models/fashion-mnist_ccond_tpu-v4_12-08-2026/checkpoints",
+        default="gs://diffjax/models/cifar10_pixel_ccond_tpu_15-08-2026/checkpoints",
     )
     parser.add_argument("--seed", type=int, default=0, help="Model initialization seed.")
     parser.add_argument("--host", default="127.0.0.1")

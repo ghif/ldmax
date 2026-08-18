@@ -38,6 +38,9 @@ def _latest_gcs_step(blob_names: list[str], prefix: str) -> int:
     return max(steps)
 
 
+from concurrent.futures import ThreadPoolExecutor
+
+
 def materialize_checkpoint(checkpoint: str) -> Path:
     """Return a local checkpoint path, downloading a GCS checkpoint if needed.
 
@@ -68,19 +71,15 @@ def materialize_checkpoint(checkpoint: str) -> Path:
         )
 
     client = storage.Client()
-    prefix_with_slash = prefix.rstrip("/") + "/"
-    blobs = list(client.list_blobs(parsed.netloc, prefix=prefix_with_slash))
-    if not blobs:
-        raise FileNotFoundError(f"No GCS checkpoint files found under {checkpoint}")
-
     step_name = Path(prefix).name
     if not step_name.isdigit():
-        step_name = str(_latest_gcs_step([blob.name for blob in blobs], prefix))
+        prefix_with_slash = prefix.rstrip("/") + "/"
+        iterator = client.list_blobs(parsed.netloc, prefix=prefix_with_slash, delimiter="/")
+        blobs_sample = list(iterator)
+        prefixes = list(iterator.prefixes)
+        all_candidates = prefixes + [b.name for b in blobs_sample]
+        step_name = str(_latest_gcs_step(all_candidates, prefix))
         prefix = f"{prefix.rstrip('/')}/{step_name}"
-        prefix_with_slash = prefix + "/"
-        blobs = [blob for blob in blobs if blob.name.startswith(prefix_with_slash)]
-        if not blobs:
-            raise FileNotFoundError(f"No files found for selected checkpoint {prefix}")
 
     resolved_checkpoint = f"gs://{parsed.netloc}/{prefix}"
     cache_root = Path(
@@ -92,6 +91,11 @@ def materialize_checkpoint(checkpoint: str) -> Path:
     if complete_marker.is_file():
         return local_checkpoint
 
+    prefix_with_slash = prefix.rstrip("/") + "/"
+    blobs = list(client.list_blobs(parsed.netloc, prefix=prefix_with_slash))
+    if not blobs:
+        raise FileNotFoundError(f"No files found for selected checkpoint {resolved_checkpoint}")
+
     download_root = local_checkpoint.parent.parent / f".{step_name}.partial"
     if download_root.exists():
         for path in sorted(download_root.rglob("*"), reverse=True):
@@ -102,14 +106,16 @@ def materialize_checkpoint(checkpoint: str) -> Path:
     local_checkpoint.parent.mkdir(parents=True, exist_ok=True)
     download_root.mkdir(parents=True, exist_ok=True)
 
-    prefix_with_slash = prefix.rstrip("/") + "/"
-    for blob in blobs:
+    def _download_blob(blob):
         relative_path = blob.name[len(prefix_with_slash) :]
         if not relative_path:
-            continue
+            return
         destination = download_root / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(destination))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(_download_blob, blobs))
 
     if local_checkpoint.exists():
         for path in sorted(local_checkpoint.rglob("*"), reverse=True):

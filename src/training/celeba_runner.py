@@ -1,0 +1,511 @@
+"""End-to-end Latent VAE Diffusion Transformer (DiT) training on CelebA."""
+
+import json
+import os
+import time
+from collections.abc import Mapping
+from math import ceil, sqrt
+from pathlib import Path
+from typing import Any
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
+import orbax.checkpoint as ocp
+from absl import flags
+from flax import nnx
+from orbax.checkpoint import type_handlers
+from PIL import Image
+
+from src.data.celeba import CELEBA_ATTRIBUTE_NAMES, get_celeba_dataset
+from src.models.dit.dit import DiT
+from src.training.ema import EMAManager
+from src.training.sampler import DDIMSampler
+from src.training.step import compute_loss, train_step
+from src.utils.checkpoint import CheckpointManager
+from src.utils.config import load_config
+from src.utils.logging import TensorBoardLogger
+from src.utils.prefetch import DevicePrefetcher
+from src.utils.rng import RNGManager
+from src.utils.vae import VAEManager
+
+FLAGS = flags.FLAGS
+if "config" not in FLAGS:
+    flags.DEFINE_string("config", "configs/celeba.yaml", "Path to the config file.")
+if "output_dir" not in FLAGS:
+    flags.DEFINE_string("output_dir", "", "Directory for logs and checkpoints.")
+if "resume_from" not in FLAGS:
+    flags.DEFINE_string("resume_from", "", "Run or checkpoint directory to resume from.")
+
+
+def _save_sample_grid(samples: jax.Array, path: str) -> None:
+    """Save an NHWC batch of [0, 1] RGB images as a grid image."""
+    images = np.asarray(samples)
+    images = (images.clip(0.0, 1.0) * 255.0).round().astype(np.uint8)
+    columns = ceil(sqrt(len(images)))
+    rows = ceil(len(images) / columns)
+    height, width = images.shape[1:3]
+    grid = Image.new("RGB", (columns * width, rows * height))
+    for index, image in enumerate(images):
+        grid.paste(
+            Image.fromarray(image[..., :3], mode="RGB"),
+            ((index % columns) * width, (index // columns) * height),
+        )
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    grid.save(path)
+
+
+def _checkpoint_state(state: Any) -> Any:
+    """Convert floating-point checkpoint leaves to FP32."""
+    return jax.tree.map(
+        lambda value: value.astype(jnp.float32)
+        if isinstance(value, jax.Array) and jnp.issubdtype(value.dtype, jnp.floating)
+        else value,
+        state,
+    )
+
+
+def _resolve_resume_checkpoint(resume_from: str) -> tuple[Path, int]:
+    """Resolve a run/checkpoint path to an Orbax root and step."""
+    path = Path(resume_from).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Resume path does not exist: {path}")
+    if (path / "checkpoints").is_dir():
+        checkpoint_root = path / "checkpoints"
+        manager = CheckpointManager(str(checkpoint_root))
+        step = manager.latest_step()
+        if step is None:
+            raise ValueError(f"No checkpoints found under {checkpoint_root}")
+        return checkpoint_root, int(step)
+    if path.name == "checkpoints" and path.is_dir():
+        checkpoint_root = path
+        manager = CheckpointManager(str(checkpoint_root))
+        step = manager.latest_step()
+        if step is None:
+            raise ValueError(f"No checkpoints found under {checkpoint_root}")
+        return checkpoint_root, int(step)
+    if path.name.isdigit() and (path / "default").is_dir():
+        return path.parent, int(path.name)
+    raise ValueError(
+        "--resume_from must be a run directory containing checkpoints/ or "
+        "an individual Orbax checkpoint directory"
+    )
+
+
+def _checkpoint_has_rng(checkpoint_root: Path, step: int) -> bool:
+    """Check Orbax metadata for an RNG leaf without deserializing arrays."""
+    metadata_path = checkpoint_root / str(step) / "default" / "_METADATA"
+    if not metadata_path.is_file():
+        return False
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    return any(key.startswith("('rng'") for key in metadata.get("tree_metadata", {}))
+
+
+def _restore_template(state: nnx.State) -> Mapping[str, Any]:
+    """Build a concrete single-device Orbax restore template."""
+    sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+
+    def wrap(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {key: wrap(child) for key, child in value.items()}
+        return {"value": jax.device_put(value, sharding)}
+
+    return wrap(state.to_pure_dict())
+
+
+def _restore_args(template: Mapping[str, Any], sharding: jax.sharding.Sharding) -> ocp.args.PyTreeRestore:
+    """Build array restore arguments for an NNX state template."""
+    args = jax.tree.map(lambda _: type_handlers.ArrayRestoreArgs(sharding=sharding), template)
+    return ocp.args.PyTreeRestore(template, restore_args=args, partial_restore=True)
+
+
+def _checkpoint_value(state: Mapping[str, Any], path: tuple[Any, ...]) -> Any:
+    """Look up a serialized NNX leaf using integer or string path keys."""
+    value: Any = state
+    for key in path:
+        if not isinstance(value, Mapping):
+            raise KeyError(path)
+        if key in value:
+            value = value[key]
+        elif str(key) in value:
+            value = value[str(key)]
+        else:
+            raise KeyError(path)
+    if isinstance(value, Mapping) and "value" in value:
+        value = value["value"]
+    return value
+
+
+def _validate_nnx_state(target_state: nnx.State, checkpoint_state: Mapping[str, Any], name: str) -> None:
+    """Validate serialized paths and shapes before mutating an NNX state."""
+    for path, variable in zip(target_state.flat_state().paths, target_state.flat_state().leaves):
+        try:
+            value = _checkpoint_value(checkpoint_state, path)
+        except KeyError as error:
+            raise ValueError(f"Checkpoint {name} is missing state path {path}") from error
+        if hasattr(value, "shape") and value.shape != variable.value.shape:
+            raise ValueError(
+                f"Checkpoint {name} shape mismatch at {path}: "
+                f"checkpoint={value.shape}, config={variable.value.shape}"
+            )
+
+
+def _restore_nnx_state(target_state: nnx.State, checkpoint_state: Mapping[str, Any], name: str) -> None:
+    """Assign serialized array values into matching NNX state variables."""
+    del name
+    for path, variable in zip(target_state.flat_state().paths, target_state.flat_state().leaves):
+        value = _checkpoint_value(checkpoint_state, path)
+        if hasattr(value, "dtype") and hasattr(variable.value, "dtype"):
+            if jnp.issubdtype(variable.value.dtype, jnp.floating):
+                value = value.astype(variable.value.dtype)
+        variable.value = value
+
+
+def _restore_training_state(
+    model: DiT,
+    optimizer: nnx.Optimizer,
+    ema: EMAManager,
+    checkpoint_state: Mapping[str, Any],
+) -> None:
+    """Restore model, optimizer, and EMA state after shape validation."""
+    required = {"model", "ema", "opt"}
+    missing = required.difference(checkpoint_state)
+    if missing:
+        raise ValueError(f"Checkpoint is missing required state groups: {sorted(missing)}")
+    _validate_nnx_state(nnx.state(model), checkpoint_state["model"], "model")
+    _validate_nnx_state(nnx.state(optimizer), checkpoint_state["opt"], "optimizer")
+    _validate_nnx_state(ema.ema_state, checkpoint_state["ema"], "EMA")
+    _restore_nnx_state(nnx.state(model), checkpoint_state["model"], "model")
+    _restore_nnx_state(nnx.state(optimizer), checkpoint_state["opt"], "optimizer")
+    _restore_nnx_state(ema.ema_state, checkpoint_state["ema"], "EMA")
+
+
+def _build_model(config: Any, rng_key: jax.Array) -> DiT:
+    """Build the Latent DiT model for CelebA."""
+    use_bf16 = config.training.get("use_bf16", False)
+    return DiT(
+        input_size=config.model.input_size,
+        patch_size=config.model.patch_size,
+        in_channels=config.model.in_channels,
+        hidden_size=config.model.hidden_size,
+        depth=config.model.depth,
+        num_heads=config.model.num_heads,
+        num_classes=config.model.num_classes,
+        label_mode=config.model.get("label_mode", "attributes"),
+        label_dim=config.model.get("label_dim", 40),
+        label_dropout_prob=0.1,
+        learn_sigma=config.model.get("learn_sigma", False),
+        compute_dtype=jnp.bfloat16 if use_bf16 else None,
+        rngs=nnx.Rngs(rng_key),
+    )
+
+
+def _validate_config(config: Any) -> None:
+    """Validate shape and conditioning invariants before model construction."""
+    if config.model.input_size != 32:
+        raise ValueError(f"CelebA Latent DiT requires model.input_size=32 (got {config.model.input_size})")
+    if config.model.in_channels != 4:
+        raise ValueError(f"CelebA Latent DiT requires model.in_channels=4 (got {config.model.in_channels})")
+    if config.model.input_size % config.model.patch_size != 0:
+        raise ValueError("model.input_size must be divisible by model.patch_size")
+    if config.model.get("label_mode", "attributes") != "attributes":
+        raise ValueError("CelebA training requires model.label_mode='attributes'")
+    if config.model.get("label_dim", 40) != 40:
+        raise ValueError("CelebA attributes conditioning requires model.label_dim=40")
+    if config.data.get("image_size", 256) != 256:
+        raise ValueError("CelebA VAE pipeline requires data.image_size=256")
+
+
+def main(_):
+    """Train a Latent VAE Diffusion Transformer on CelebA."""
+    config = load_config(FLAGS.config)
+    _validate_config(config)
+    output_dir = FLAGS.output_dir or "./outputs/celeba_latent"
+    if FLAGS.resume_from and not FLAGS.output_dir:
+        raise ValueError("--output_dir is required when --resume_from is used")
+    os.makedirs(output_dir, exist_ok=True)
+
+    resume_root = None
+    restored_step = 0
+    checkpoint_state = None
+    checkpoint_has_rng = False
+    if FLAGS.resume_from:
+        resume_root, restored_step = _resolve_resume_checkpoint(FLAGS.resume_from)
+        checkpoint_has_rng = _checkpoint_has_rng(resume_root, restored_step)
+
+    use_bf16 = config.training.get("use_bf16", False)
+    if use_bf16:
+        jax.config.update("jax_default_matmul_precision", "bfloat16")
+
+    rng = RNGManager(config.training.seed)
+    logger = TensorBoardLogger(os.path.join(output_dir, "logs"))
+    checkpointer = CheckpointManager(
+        os.path.join(output_dir, "checkpoints"),
+        gcs_directory="gs://diffjax/models",
+        best_metric="validation_loss",
+        best_mode="min",
+        artifact_paths=[
+            os.path.join(output_dir, "logs"),
+            os.path.join(output_dir, "train_logs.txt"),
+        ],
+    )
+    sample_dir = os.path.join(output_dir, "checkpoints", "samples")
+    os.makedirs(sample_dir, exist_ok=True)
+
+    # 1. Initialize VAE Manager
+    vae_manager = VAEManager()
+    sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+    vae_manager.params = jax.device_put(vae_manager.params, sharding)
+
+    @jax.jit
+    def encode_fn(images, key):
+        return vae_manager.encode(images, key)
+
+    # 2. Build Models & Optimizer
+    model = _build_model(config, rng.next())
+    optimizer = nnx.Optimizer(
+        model,
+        optax.adamw(config.training.learning_rate, weight_decay=config.training.weight_decay),
+        wrt=nnx.Param,
+    )
+    ema = EMAManager(model, decay=config.training.ema_decay)
+    sampling_model = _build_model(config, rng.next())
+
+    if resume_root is not None:
+        source_checkpointer = CheckpointManager(str(resume_root))
+        template = {
+            "model": _restore_template(nnx.state(model)),
+            "ema": _restore_template(ema.ema_state),
+            "opt": _restore_template(nnx.state(optimizer)),
+        }
+        if checkpoint_has_rng:
+            template["rng"] = {"key": jax.device_put(rng.state, sharding)}
+        checkpoint_state = source_checkpointer.restore(
+            restored_step, args=_restore_args(template, sharding)
+        )
+        if checkpoint_state is None:
+            raise ValueError(f"Unable to restore checkpoint step {restored_step}")
+        _restore_training_state(model, optimizer, ema, checkpoint_state)
+        rng_state = checkpoint_state.get("rng")
+        if isinstance(rng_state, Mapping) and "key" in rng_state:
+            rng.restore(rng_state["key"])
+        else:
+            rng = RNGManager.from_seed_and_step(config.training.seed, restored_step)
+
+    sampler = DDIMSampler()
+
+    @nnx.jit
+    def model_fn(model, x, t, y):
+        output = model(x, t, y)
+        return jnp.split(output, 2, axis=-1)[0] if output.shape[-1] == x.shape[-1] * 2 else output
+
+    @nnx.jit
+    def validation_step(model, latents, labels, key):
+        return compute_loss(model, latents, labels, key, train=False)
+
+    # 3. Load Data
+    data = get_celeba_dataset(
+        batch_size=config.training.batch_size,
+        split="train",
+        shuffle=True,
+        seed=config.training.seed,
+        target_size=config.data.image_size,
+        dataset_name=getattr(config.data, "dataset_name", "flwrlabs/celeba"),
+        dataset_config=getattr(config.data, "dataset_config", "img_align+identity+attr"),
+    )
+    validation_data = get_celeba_dataset(
+        batch_size=config.training.batch_size,
+        split="test",
+        shuffle=False,
+        seed=config.training.seed,
+        target_size=config.data.image_size,
+        dataset_name=getattr(config.data, "dataset_name", "flwrlabs/celeba"),
+        dataset_config=getattr(config.data, "dataset_config", "img_align+identity+attr"),
+    )
+    prefetch_size = config.training.get("prefetch_size", 2)
+    if prefetch_size > 0:
+        data_iter = iter(DevicePrefetcher(data, sharding, prefetch_size))
+        validation_iter = iter(DevicePrefetcher(validation_data, sharding, 1))
+    else:
+        data_iter, validation_iter = iter(data), iter(validation_data)
+
+    log_path = os.path.join(output_dir, "train_logs.txt")
+    trainlog = open(log_path, "w", encoding="utf-8")
+
+    def emit(message: str) -> None:
+        """Write the same human-readable message to terminal and log file."""
+        print(message, flush=True)
+        trainlog.write(message + "\n")
+        trainlog.flush()
+
+    emit(f"Using device: {jax.devices()[0]}")
+    emit("Latent VAE Diffusion: Images (256x256x3) -> Latents (32x32x4).")
+    if resume_root is not None:
+        emit(f"Resuming from {resume_root} at checkpoint step {restored_step}.")
+        if checkpoint_state is not None and not checkpoint_has_rng:
+            emit("Checkpoint has no RNG state; using deterministic seed-and-step fallback.")
+    emit(f"Starting training for {config.training.total_steps} steps...")
+    if resume_root is not None and restored_step >= config.training.total_steps:
+        emit("Checkpoint already reaches the configured target; no training steps to run.")
+
+    training_start = time.perf_counter()
+    latest_validation_loss = None
+    data_wait_duration = 0.0
+    ema_update_duration = 0.0
+    sampling_duration = 0.0
+    gcs_sync_duration = 0.0
+
+    try:
+        for step in range(restored_step, config.training.total_steps):
+            data_wait_start = time.perf_counter()
+            batch = next(data_iter)
+            data_wait_duration = time.perf_counter() - data_wait_start
+
+            # 1. VAE Latent Encoding
+            latents = encode_fn(batch["image"], rng.next())
+
+            # 2. Diffusion Training Step
+            train_step_start = time.perf_counter()
+            metrics = train_step(
+                model,
+                optimizer,
+                latents,
+                batch["label"],
+                rng.next(),
+                use_bf16=use_bf16,
+            )
+            train_dispatch_duration = time.perf_counter() - train_step_start
+
+            # 3. EMA Update
+            ema_start = time.perf_counter()
+            ema.update(model)
+            ema_update_duration = time.perf_counter() - ema_start
+
+            # 4. Periodic Evaluation Logging
+            if step % config.evaluation.log_interval == 0:
+                loss = float(metrics["loss"])
+                train_step_duration = time.perf_counter() - train_step_start
+
+                validation_batch = next(validation_iter)
+                val_latents = encode_fn(validation_batch["image"], rng.next())
+                validation_step_start = time.perf_counter()
+                validation_loss = float(
+                    validation_step(
+                        model,
+                        val_latents,
+                        validation_batch["label"],
+                        rng.next(),
+                    )
+                )
+                latest_validation_loss = validation_loss
+                validation_step_duration = time.perf_counter() - validation_step_start
+
+                batch_size = batch["image"].shape[0]
+                validation_batch_size = validation_batch["image"].shape[0]
+                train_steps_per_sec = 1.0 / max(train_step_duration, 1e-12)
+                validation_steps_per_sec = 1.0 / max(validation_step_duration, 1e-12)
+                train_samples_per_sec = batch_size * train_steps_per_sec
+                validation_samples_per_sec = validation_batch_size * validation_steps_per_sec
+                elapsed_sec = time.perf_counter() - training_start
+                progress_percent = 100.0 * (step + 1) / config.training.total_steps
+
+                logger.log_scalars(
+                    step,
+                    {
+                        "train/loss": loss,
+                        "validation/loss": validation_loss,
+                        "performance/train_step_sec": train_step_duration,
+                        "performance/train_steps_per_sec": train_steps_per_sec,
+                        "performance/train_samples_per_sec": train_samples_per_sec,
+                        "performance/data_wait_sec": data_wait_duration,
+                        "performance/train_dispatch_sec": train_dispatch_duration,
+                        "performance/ema_update_sec": ema_update_duration,
+                        "performance/validation_step_sec": validation_step_duration,
+                        "performance/validation_steps_per_sec": validation_steps_per_sec,
+                        "performance/validation_samples_per_sec": validation_samples_per_sec,
+                        "performance/sampling_sec": sampling_duration,
+                        "performance/gcs_sync_sec": gcs_sync_duration,
+                    },
+                )
+                logger.flush()
+                emit(
+                    f"step={step + 1:05d}/{config.training.total_steps:05d} "
+                    f"progress={progress_percent:.2f}% train_loss={loss:.6f} "
+                    f"validation_loss={validation_loss:.6f} "
+                    f"train_step_sec={train_step_duration:.6f} "
+                    f"train_steps_per_sec={train_steps_per_sec:.6f} "
+                    f"train_samples_per_sec={train_samples_per_sec:.6f} "
+                    f"data_wait_sec={data_wait_duration:.6f} "
+                    f"train_dispatch_sec={train_dispatch_duration:.6f} "
+                    f"ema_update_sec={ema_update_duration:.6f} "
+                    f"validation_step_sec={validation_step_duration:.6f} "
+                    f"validation_steps_per_sec={validation_steps_per_sec:.6f} "
+                    f"validation_samples_per_sec={validation_samples_per_sec:.6f} "
+                    f"sampling_sec={sampling_duration:.6f} "
+                    f"gcs_sync_sec={gcs_sync_duration:.6f} "
+                    f"elapsed_sec={elapsed_sec:.6f}"
+                )
+
+            # 5. Periodic Sampling & Image Generation
+            if step % config.evaluation.sampling_interval == 0:
+                sampling_start = time.perf_counter()
+                nnx.update(sampling_model, ema.ema_state)
+                count = min(config.evaluation.get("sample_count", 16), batch["label"].shape[0])
+                labels = batch["label"][:count]
+                null_labels = jnp.zeros_like(labels)
+
+                samples = sampler.sample(
+                    lambda x, t, y: model_fn(sampling_model, x, t, y),
+                    (
+                        count,
+                        config.model.input_size,
+                        config.model.input_size,
+                        config.model.in_channels,
+                    ),
+                    rng.next(),
+                    num_inference_steps=config.evaluation.get("num_inference_steps", 50),
+                    y=labels,
+                    null_y=null_labels,
+                    cfg_scale=config.evaluation.get("cfg_scale", 4.0),
+                )
+                images = vae_manager.decode(samples)
+                logger.log_images(step, "train/samples", images)
+                _save_sample_grid(images, os.path.join(sample_dir, f"samples_step_{step:06d}.png"))
+                logger.flush()
+                sampling_duration = time.perf_counter() - sampling_start
+
+            # 6. Periodic Checkpointing
+            should_checkpoint = (
+                step % config.evaluation.checkpoint_interval == 0 and step > 0
+            ) or step == config.training.total_steps - 1
+            if should_checkpoint:
+                if step % config.evaluation.log_interval != 0:
+                    validation_batch = next(validation_iter)
+                    val_latents = encode_fn(validation_batch["image"], rng.next())
+                    latest_validation_loss = float(
+                        validation_step(
+                            model,
+                            val_latents,
+                            validation_batch["label"],
+                            rng.next(),
+                        )
+                    )
+                gcs_sync_start = time.perf_counter()
+                checkpointer.save(
+                    step,
+                    {
+                        "model": _checkpoint_state(nnx.state(model)),
+                        "ema": _checkpoint_state(ema.ema_state),
+                        "opt": _checkpoint_state(nnx.state(optimizer)),
+                        "rng": {"key": rng.state},
+                    },
+                    metrics={"validation_loss": latest_validation_loss},
+                )
+                gcs_sync_duration = time.perf_counter() - gcs_sync_start
+
+        emit("Training complete.")
+    finally:
+        logger.close()
+        trainlog.close()
+        checkpointer.sync_to_gcs()
