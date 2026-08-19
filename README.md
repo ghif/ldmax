@@ -49,7 +49,9 @@ flowchart TD
 ## 📁 Repository Structure
 
 ```text
-ldmax/
+├── app/                   # Full-stack web application
+│   ├── frontend/          # Static web app (GitHub Pages: ghif.github.io/ldmax)
+│   └── backend/           # FastAPI backend server (Google Cloud Run)
 ├── configs/               # YAML experiment configurations
 │   ├── celeba*.yaml       # CelebA latent-space configurations (256x256 -> 32x32 latents)
 │   ├── cifar10*.yaml      # CIFAR-10 latent & native-pixel configurations
@@ -181,8 +183,9 @@ tensorboard --logdir outputs
 
 ---
 
-### 4. Interactive Demos
+### 4. Interactive Demos & Web App
 
+#### Option A: Gradio Local Demo
 Launch the interactive Gradio browser demo to generate and blend classes or facial attributes across datasets in dedicated tabs:
 
 ```bash
@@ -194,6 +197,18 @@ PYTHONPATH=. python scripts/demo.py \
     --celeba-checkpoint gs://diffjax/models/celeba_ldm_ccond_tpu-v6e-1_18-08-2026/checkpoints/270000 \
     --port 7860
 ```
+
+#### Option B: Full-Stack Web App (FastAPI + GitHub Pages)
+Run the production full-stack web application located in `app/`:
+
+```bash
+# 1. Start FastAPI backend (Cloud Run target)
+PYTHONPATH=. uvicorn app.backend.main:app --host 127.0.0.1 --port 8000 --reload
+
+# 2. Serve static frontend (GitHub Pages target: ghif.github.io/ldmax)
+python3 -m http.server 3000 --directory app/frontend
+```
+Open `http://localhost:3000` in your browser.
 
 ---
 

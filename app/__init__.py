@@ -1,0 +1,1 @@
+"""LDMAX Application."""

@@ -1,0 +1,15 @@
+.gcloudignore
+.git
+.gitignore
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.ruff_cache/
+.gemini/
+/models/
+/samples/
+/celeba_extracted/
+/cifar_extracted/
+tests/
+*.ipynb
