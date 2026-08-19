@@ -46,7 +46,7 @@ ldmax/
 │   ├── train_celeba.py    # Launch CelebA latent diffusion training
 │   ├── train.py           # Unified training entry point
 │   ├── sample*.py         # Sampling / evaluation scripts
-│   └── demo_*.py          # Interactive demos
+│   └── demo.py            # Unified interactive multi-tab demo
 ├── src/                   # Core library code
 │   ├── data/              # Dataset sources & pipelines (cifar.py, celeba.py, fashion_mnist.py)
 │   ├── models/            # Neural network architectures

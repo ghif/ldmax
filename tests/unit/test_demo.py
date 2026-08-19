@@ -7,13 +7,15 @@ from flax import nnx
 
 
 def test_demo_class_names():
-    """Test CIFAR-10 and Fashion MNIST class name lists."""
-    from scripts.demo import CIFAR10_CLASSES, FASHION_CLASSES
+    """Test CIFAR-10, Fashion MNIST, and CelebA attribute lists."""
+    from scripts.demo import CELEBA_ATTRIBUTE_NAMES, CIFAR10_CLASSES, FASHION_CLASSES
 
     assert len(CIFAR10_CLASSES) == 10
     assert len(FASHION_CLASSES) == 10
+    assert len(CELEBA_ATTRIBUTE_NAMES) == 40
     assert CIFAR10_CLASSES[0] == "airplane"
     assert FASHION_CLASSES[0] == "T-shirt/top"
+    assert "Smiling" in CELEBA_ATTRIBUTE_NAMES
 
 
 def test_demo_to_rgb_images():
@@ -41,7 +43,7 @@ def test_demo_to_grayscale_images():
 
 
 def test_demo_build_demo_model():
-    """Test building demo DiT models for CIFAR-10 and Fashion MNIST configs."""
+    """Test building demo DiT models for CIFAR-10, Fashion MNIST, and CelebA configs."""
     pytest.importorskip("ml_collections")
     from scripts.demo import _build_demo_model
     from src.models.dit.dit import DiT
@@ -56,6 +58,11 @@ def test_demo_build_demo_model():
     fashion_model = _build_demo_model(fashion_config, seed=42)
     assert isinstance(fashion_model, DiT)
     assert fashion_model.y_embedder.num_classes == 10
+
+    celeba_config = load_config("configs/celeba.yaml")
+    celeba_model = _build_demo_model(celeba_config, seed=42)
+    assert isinstance(celeba_model, DiT)
+    assert cifar_model.y_embedder is not None
 
 
 def test_demo_make_generate():
@@ -95,6 +102,47 @@ def test_demo_make_generate():
         generate_rgb([0.0] * 10, num_samples=2, inference_steps=1, cfg_scale=1.5, seed=0)
 
 
+def test_demo_make_celeba_generate():
+    """Test CelebA latent sampling and mock VAE decoding."""
+    pytest.importorskip("ml_collections")
+    from scripts.demo import _make_celeba_generate
+    from src.models.dit.dit import DiT
+    from src.utils.config import load_config
+
+    config = load_config("configs/celeba.yaml")
+    model = DiT(
+        input_size=8,
+        patch_size=2,
+        in_channels=4,
+        hidden_size=32,
+        depth=1,
+        num_heads=2,
+        num_classes=40,
+        label_mode="attributes",
+        label_dim=40,
+        rngs=nnx.Rngs(0),
+    )
+    small_config = config
+    small_config.model.input_size = 8
+    small_config.model.in_channels = 4
+    small_config.model.num_classes = 40
+    small_config.model.label_dim = 40
+
+    class MockVAE:
+        def decode(self, latents):
+            b = latents.shape[0]
+            return jnp.ones((b, 64, 64, 3), dtype=jnp.float32)
+
+    celeba_gen = _make_celeba_generate(model, small_config, vae_manager=MockVAE())
+    images = celeba_gen(
+        ["Smiling", "Young"], num_samples=2, inference_steps=1, cfg_scale=4.0, seed=0
+    )
+    assert len(images) == 2
+    assert images[0].shape == (64, 64, 3)
+    assert images[0].dtype == np.uint8
+    assert np.all(images[0] == 255)
+
+
 def test_demo_build_app(monkeypatch):
     """Test building the complete Gradio app with mocked checkpoint restoration."""
     pytest.importorskip("gradio")
@@ -102,17 +150,22 @@ def test_demo_build_app(monkeypatch):
     from scripts.demo import build_app
 
     monkeypatch.setattr(
-        "scripts.demo.restore_cifar10_ema", lambda model, checkpoint: None
+        "scripts.demo._restore_model_ema", lambda model, checkpoint: None
     )
-    monkeypatch.setattr(
-        "scripts.demo.restore_fashion_ema", lambda model, checkpoint: None
-    )
+
+    class MockVAE:
+        def decode(self, latents):
+            b = latents.shape[0]
+            return jnp.ones((b, 64, 64, 3), dtype=jnp.float32)
 
     app = build_app(
         cifar10_config_path="configs/cifar10_pixel.yaml",
         cifar10_checkpoint="fake_cifar_cp",
         fashion_config_path="configs/fashion_mnist_tpu_v4.yaml",
         fashion_checkpoint="fake_fashion_cp",
+        celeba_config_path="configs/celeba.yaml",
+        celeba_checkpoint="fake_celeba_cp",
+        vae_manager=MockVAE(),
         seed=0,
     )
     assert app is not None

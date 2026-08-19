@@ -1,4 +1,4 @@
-"""Unified interactive Gradio demo for CIFAR-10 and Fashion MNIST sampling."""
+"""Unified interactive Gradio demo for CIFAR-10, Fashion MNIST, and CelebA sampling."""
 
 import argparse
 import sys
@@ -12,6 +12,8 @@ if str(REPO_ROOT) not in sys.path:
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
+import orbax.checkpoint as ocp  # noqa: E402
+from orbax.checkpoint import type_handlers  # noqa: E402
 
 try:
     import gradio as gr
@@ -20,12 +22,14 @@ except ImportError:  # pragma: no cover - exercised by the CLI
 
 from flax import nnx  # noqa: E402
 
-from src.models.dit.dit import DiT, resolve_conditioning_mode  # noqa: E402
-from src.sampling.cifar10 import _restore_ema as restore_cifar10_ema  # noqa: E402
-from src.sampling.fashion_mnist import _restore_ema as restore_fashion_ema  # noqa: E402
+from src.data.celeba import CELEBA_ATTRIBUTE_NAMES  # noqa: E402
+from src.models.dit.dit import DiT  # noqa: E402
+from src.models.factory import create_model  # noqa: E402
 from src.training.sampler import DDIMSampler  # noqa: E402
+from src.utils.checkpoint import CheckpointManager, materialize_checkpoint  # noqa: E402
 from src.utils.config import load_config  # noqa: E402
 from src.utils.rng import RNGManager  # noqa: E402
+from src.utils.vae import VAEManager  # noqa: E402
 
 CIFAR10_CLASSES = [
     "airplane",
@@ -56,26 +60,54 @@ FASHION_CLASSES = [
 
 def _build_demo_model(config: Any, seed: int) -> DiT:
     """Build the checkpoint-compatible model for the active JAX backend."""
-    conditioning = config.model.get("conditioning", "class")
-    if conditioning != "class":
-        raise ValueError("This demo requires a class-conditioned model")
     use_bf16 = config.training.get("use_bf16", False)
     use_bf16 = use_bf16 and jax.devices()[0].platform == "tpu"
     config.training.use_bf16 = use_bf16
-    return DiT(
-        input_size=config.model.input_size,
-        patch_size=config.model.patch_size,
-        in_channels=config.model.in_channels,
-        hidden_size=config.model.hidden_size,
-        depth=config.model.depth,
-        num_heads=config.model.num_heads,
-        num_classes=config.model.num_classes,
-        label_mode=resolve_conditioning_mode(conditioning),
-        label_dropout_prob=0.1,
-        compute_dtype=jnp.bfloat16 if use_bf16 else None,
-        learn_sigma=config.model.get("learn_sigma", False),
-        rngs=nnx.Rngs(RNGManager(seed).next()),
+    return create_model(config, RNGManager(seed).next())
+
+
+def _restore_model_ema(model: DiT, checkpoint: str) -> None:
+    """Restore EMA parameters from an individual Orbax checkpoint directory."""
+    checkpoint_path = materialize_checkpoint(checkpoint)
+    print(f"Using checkpoint: {checkpoint_path}")
+    checkpoint_root = checkpoint_path.parent
+    checkpoint_step = int(checkpoint_path.name)
+    manager = CheckpointManager(checkpoint_root)
+    sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+    pure_state = nnx.state(model).to_pure_dict()
+
+    def template(value):
+        if isinstance(value, dict):
+            return {key: template(child) for key, child in value.items()}
+        return {"value": jax.device_put(value, sharding)}
+
+    restore_template = {"ema": template(pure_state)}
+    restore_args = jax.tree.map(
+        lambda _: type_handlers.ArrayRestoreArgs(sharding=sharding),
+        restore_template,
     )
+    state = manager.restore(
+        checkpoint_step,
+        args=ocp.args.PyTreeRestore(
+            restore_template,
+            restore_args=restore_args,
+            partial_restore=True,
+        ),
+    )
+    if state is None or "ema" not in state:
+        raise ValueError(f"Checkpoint does not contain EMA parameters: {checkpoint}")
+
+    checkpoint_state = state["ema"]
+    flat_state = nnx.state(model).flat_state()
+    for path, variable in zip(flat_state.paths, flat_state.leaves):
+        value = checkpoint_state
+        for key in path:
+            if not isinstance(value, dict):
+                raise ValueError(f"Malformed EMA state at path {path}")
+            value = value[key] if key in value else value[str(key)]
+        if isinstance(value, dict) and "value" in value:
+            value = value["value"]
+        variable.value = value
 
 
 def _to_rgb_images(samples: jax.Array) -> list[np.ndarray]:
@@ -137,6 +169,55 @@ def _make_generate(model: DiT, config: Any, is_grayscale: bool = False):
             clip_denoised=not is_grayscale,
         )
         return _to_grayscale_images(samples) if is_grayscale else _to_rgb_images(samples)
+
+    return generate
+
+
+def _make_celeba_generate(model: DiT, config: Any, vae_manager: Any = None):
+    sampler = DDIMSampler()
+    vae = vae_manager if vae_manager is not None else VAEManager()
+
+    @nnx.jit
+    def model_fn(x, t, y):
+        output = model(x, t, y)
+        if output.shape[-1] == x.shape[-1] * 2:
+            return jnp.split(output, 2, axis=-1)[0]
+        return output
+
+    def generate(
+        selected_attributes: list[str],
+        num_samples: int,
+        inference_steps: int,
+        cfg_scale: float,
+        seed: int,
+    ):
+        num_attrs = getattr(config.model, "label_dim", 40)
+        y = np.zeros((num_samples, num_attrs), dtype=np.float32)
+        if selected_attributes:
+            for attr in selected_attributes:
+                if attr in CELEBA_ATTRIBUTE_NAMES:
+                    idx = CELEBA_ATTRIBUTE_NAMES.index(attr)
+                    y[:, idx] = 1.0
+
+        y_tensor = jnp.asarray(y)
+        null_y = jnp.zeros_like(y_tensor)
+
+        latents = sampler.sample(
+            model_fn=model_fn,
+            shape=(
+                num_samples,
+                config.model.input_size,
+                config.model.input_size,
+                config.model.in_channels,
+            ),
+            rng_key=jax.random.key(int(seed)),
+            num_inference_steps=int(inference_steps),
+            y=y_tensor,
+            null_y=null_y,
+            cfg_scale=float(cfg_scale),
+        )
+        images = vae.decode(latents)
+        return [(img * 255.0).round().astype(np.uint8) for img in np.asarray(images)]
 
     return generate
 
@@ -216,11 +297,83 @@ def _build_dataset_tab(
     )
 
 
+def _build_celeba_tab(
+    generate_fn: Any,
+    model_description: str = "",
+) -> None:
+    """Build the UI layout and event listeners for the CelebA tab."""
+    gr.Markdown(f"### Model configuration\n{model_description}")
+    gr.Markdown(
+        "### CelebA Facial Attributes\n"
+        "Select facial attributes to condition the Latent Diffusion Transformer (**DiT**)."
+    )
+
+    def generate_with_caption(
+        selected_attrs, num_samples, inference_steps, cfg_scale, sample_seed
+    ):
+        images = generate_fn(
+            selected_attrs or [],
+            int(num_samples),
+            int(inference_steps),
+            float(cfg_scale),
+            int(sample_seed),
+        )
+        active_str = ", ".join(selected_attrs) if selected_attrs else "None (unconditioned)"
+        return images, f"Active attributes: {active_str}"
+
+    with gr.Row(equal_height=False):
+        with gr.Column(scale=1, min_width=280):
+            gr.Markdown("### Controls\nSelect attributes and generation parameters.")
+            attr_dropdown = gr.Dropdown(
+                choices=list(CELEBA_ATTRIBUTE_NAMES),
+                value=["Smiling", "Young"],
+                multiselect=True,
+                label="Facial Attributes (Multi-Select)",
+            )
+            num_samples = gr.Slider(
+                1, 16, value=4, step=1, label="Number of samples", scale=1, min_width=180
+            )
+            inference_steps = gr.Slider(
+                10, 100, value=50, step=5, label="Denoising steps", scale=1, min_width=180
+            )
+            cfg_scale = gr.Slider(
+                1.0,
+                10.0,
+                value=4.0,
+                step=0.5,
+                label="Classifier-free guidance (CFG)",
+                scale=1,
+                min_width=180,
+            )
+            sample_seed = gr.Slider(
+                0, 100000, value=42, step=1, label="Random seed", scale=1, min_width=180
+            )
+            generate_button = gr.Button("Generate faces", variant="primary")
+
+        with gr.Column(scale=2, min_width=520):
+            caption = gr.Markdown("Select attributes and click Generate faces.")
+            gallery = gr.Gallery(
+                label="Generated CelebA faces (256×256 RGB)",
+                columns=2,
+                rows=2,
+                height=720,
+            )
+
+    generate_button.click(
+        generate_with_caption,
+        inputs=[attr_dropdown, num_samples, inference_steps, cfg_scale, sample_seed],
+        outputs=[gallery, caption],
+    )
+
+
 def build_app(
     cifar10_config_path: str,
     cifar10_checkpoint: str,
     fashion_config_path: str,
     fashion_checkpoint: str,
+    celeba_config_path: str | None = None,
+    celeba_checkpoint: str | None = None,
+    vae_manager: Any = None,
     seed: int = 0,
 ):
     """Build the unified multi-tab Gradio application."""
@@ -233,20 +386,30 @@ def build_app(
     # CIFAR-10 model setup
     cifar_config = load_config(cifar10_config_path)
     cifar_model = _build_demo_model(cifar_config, seed)
-    restore_cifar10_ema(cifar_model, cifar10_checkpoint)
+    _restore_model_ema(cifar_model, cifar10_checkpoint)
     cifar_generate = _make_generate(cifar_model, cifar_config, is_grayscale=False)
 
     # Fashion MNIST model setup
     fashion_config = load_config(fashion_config_path)
     fashion_model = _build_demo_model(fashion_config, seed)
-    restore_fashion_ema(fashion_model, fashion_checkpoint)
+    _restore_model_ema(fashion_model, fashion_checkpoint)
     fashion_generate = _make_generate(fashion_model, fashion_config, is_grayscale=True)
+
+    # CelebA Latent Diffusion model setup (optional / on-demand)
+    celeba_generate = None
+    if celeba_config_path and celeba_checkpoint:
+        celeba_config = load_config(celeba_config_path)
+        celeba_model = _build_demo_model(celeba_config, seed)
+        _restore_model_ema(celeba_model, celeba_checkpoint)
+        celeba_generate = _make_celeba_generate(
+            celeba_model, celeba_config, vae_manager=vae_manager
+        )
 
     with gr.Blocks(title="LDMAX Diffusion Image Generator") as app:
         gr.Markdown(
             "# LDMAX Diffusion Image Generator\n"
-            "Generate images with class-conditioned Diffusion Transformer (**DiT**) "
-            "models trained on JAX / TPU. Switch between the tabs below to explore datasets."
+            "Generate images with class- and attribute-conditioned Diffusion Transformer (**DiT**) "
+            "models trained on JAX / TPU. Switch between tabs below to explore different datasets."
         )
 
         with gr.Tabs():
@@ -272,6 +435,16 @@ def build_app(
                         "Trained on **Fashion-MNIST (28×28×1)** for 30,000 steps on TPU v6e-1."
                     ),
                 )
+            if celeba_generate is not None:
+                with gr.Tab("CelebA (256×256 Latent RGB)"):
+                    _build_celeba_tab(
+                        generate_fn=celeba_generate,
+                        model_description=(
+                            "Latent Diffusion **DiT** (12 blocks, 384 hidden size, 6 heads, "
+                            "2×2 patches) operating on 32×32×4 VAE latents, decoded to "
+                            "**256×256 RGB**. Trained on **CelebA (40 attributes)** on TPU v6e-1."
+                        ),
+                    )
 
     return app
 
@@ -289,6 +462,11 @@ def main() -> None:
         "--fashion-checkpoint",
         default="gs://diffjax/models/fashion-mnist_ccond_tpu-v4_12-08-2026/checkpoints",
     )
+    parser.add_argument("--celeba-config", default="configs/celeba.yaml")
+    parser.add_argument(
+        "--celeba-checkpoint",
+        default="gs://diffjax/models/celeba_ldm_ccond_tpu-v6e-1_18-08-2026/checkpoints/270000",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Model initialization seed.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
@@ -302,6 +480,8 @@ def main() -> None:
         cifar10_checkpoint=args.cifar10_checkpoint,
         fashion_config_path=args.fashion_config,
         fashion_checkpoint=args.fashion_checkpoint,
+        celeba_config_path=args.celeba_config,
+        celeba_checkpoint=args.celeba_checkpoint,
         seed=args.seed,
     )
     app.launch(server_name=args.host, server_port=args.port, share=args.share)

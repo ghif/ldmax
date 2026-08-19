@@ -61,8 +61,7 @@ ldmax/
 │   ├── train_cifar10.py   # CIFAR-10 training launcher
 │   ├── train_fashion_mnist.py # Fashion-MNIST training launcher
 │   ├── train_celeba.py    # CelebA training launcher
-│   ├── demo_cifar10.py    # Interactive Gradio demo for CIFAR-10
-│   └── demo_fashion_mnist.py # Interactive Gradio demo for Fashion-MNIST
+│   └── demo.py            # Unified multi-dataset tabbed Gradio demo
 ├── src/                   # Core library code
 │   ├── data/              # Dataset sources and factory
 │   │   ├── celeba.py      # CelebA Grain pipeline
@@ -184,18 +183,16 @@ tensorboard --logdir outputs
 
 ### 4. Interactive Demos
 
-Launch interactive Gradio browser demos for sampling and class blending:
+Launch the interactive Gradio browser demo to generate and blend classes or facial attributes across datasets in dedicated tabs:
 
 ```bash
-# CIFAR-10 Demo
-PYTHONPATH=. python scripts/demo_cifar10.py \
-    --config configs/cifar10_pixel.yaml \
-    --checkpoint outputs/cifar10_pixel_run/checkpoints/5000
-
-# Fashion-MNIST Demo
-PYTHONPATH=. python scripts/demo_fashion_mnist.py \
-    --config configs/fashion_mnist.yaml \
-    --checkpoint outputs/fashion_mnist_run/checkpoints/1000
+# Launch unified multi-dataset tabbed demo (CIFAR-10, Fashion-MNIST, CelebA)
+PYTHONPATH=. python scripts/demo.py \
+    --cifar10-config configs/cifar10_pixel.yaml \
+    --fashion-config configs/fashion_mnist_tpu_v4.yaml \
+    --celeba-config configs/celeba.yaml \
+    --celeba-checkpoint gs://diffjax/models/celeba_ldm_ccond_tpu-v6e-1_18-08-2026/checkpoints/270000 \
+    --port 7860
 ```
 
 ---
