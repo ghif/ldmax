@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LDMAX — Diffusion Models in JAX</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✨</text></svg>">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="logo-icon">⚡</div>
+        <div class="brand-text">
+          <h1>LDMAX</h1>
+          <span class="brand-tagline">Diffusion Transformers in JAX</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div id="backend-status-pill" class="status-pill status-connecting" title="Checking backend connection...">
+          <span class="status-dot"></span>
+          <span class="status-text">Connecting...</span>
+        </div>
+        <button id="settings-btn" class="icon-btn" title="Backend Settings" aria-label="Backend Settings">
+          ⚙️
+        </button>
+        <button id="theme-toggle-btn" class="icon-btn" title="Toggle Theme" aria-label="Toggle Theme">
+          🌙
+        </button>
+        <a href="https://github.com/ghif/ldmax" target="_blank" rel="noopener noreferrer" class="github-btn" title="GitHub Repository">
+          <svg height="20" width="20" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+          </svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs" role="tablist">
+      <button class="tab-btn active" data-tab="cifar10" role="tab" aria-selected="true">
+        <span class="tab-icon">🖼️</span>
+        <span class="tab-title">CIFAR-10</span>
+        <span class="tab-meta">32×32 RGB</span>
+      </button>
+      <button class="tab-btn" data-tab="fashion_mnist" role="tab" aria-selected="false">
+        <span class="tab-icon">👗</span>
+        <span class="tab-title">Fashion-MNIST</span>
+        <span class="tab-meta">28×28 Grayscale</span>
+      </button>
+      <button class="tab-btn" data-tab="celeba" role="tab" aria-selected="false">
+        <span class="tab-icon">👤</span>
+        <span class="tab-title">CelebA Latent DiT</span>
+        <span class="tab-meta">256×256 RGB</span>
+      </button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- CIFAR-10 Panel -->
+      <section id="panel-cifar10" class="tab-panel active" role="tabpanel">
+        <div class="panel-layout">
+          <!-- Controls Column -->
+          <div class="controls-card">
+            <div class="card-header">
+              <h2>CIFAR-10 Generator</h2>
+              <p class="model-badge">Raw-Pixel DiT (8 Blocks, 256 Hidden, 8 Heads)</p>
+            </div>
+
+            <!-- Quick Presets -->
+            <div class="presets-section">
+              <label class="section-label">Quick Class Presets</label>
+              <div class="preset-chips" id="cifar10-presets">
+                <button class="chip active" data-class="0">✈️ Airplane</button>
+                <button class="chip" data-class="1">🚗 Auto</button>
+                <button class="chip" data-class="2">🐦 Bird</button>
+                <button class="chip" data-class="3">🐱 Cat</button>
+                <button class="chip" data-class="4">🦌 Deer</button>
+                <button class="chip" data-class="5">🐶 Dog</button>
+                <button class="chip" data-class="6">🐸 Frog</button>
+                <button class="chip" data-class="7">🐴 Horse</button>
+                <button class="chip" data-class="8">🚢 Ship</button>
+                <button class="chip" data-class="9">🚚 Truck</button>
+              </div>
+            </div>
+
+            <!-- Class Influence Sliders -->
+            <div class="sliders-section">
+              <div class="sliders-header">
+                <label class="section-label">Class Influences (Multi-Conditioning)</label>
+                <button class="text-btn" id="cifar10-reset-sliders">Reset</button>
+              </div>
+              <div class="sliders-grid" id="cifar10-sliders-container">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
+
+            <!-- Hyperparameters -->
+            <div class="hyperparams-section">
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="cifar10-samples">Number of samples</label>
+                  <span class="value-display" id="cifar10-samples-val">8</span>
+                </div>
+                <input type="range" id="cifar10-samples" min="1" max="16" value="8" step="1">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="cifar10-steps">Denoising steps (DDIM)</label>
+                  <span class="value-display" id="cifar10-steps-val">50</span>
+                </div>
+                <input type="range" id="cifar10-steps" min="10" max="100" value="50" step="5">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="cifar10-cfg">Classifier-Free Guidance (CFG)</label>
+                  <span class="value-display" id="cifar10-cfg-val">1.5</span>
+                </div>
+                <input type="range" id="cifar10-cfg" min="1.0" max="5.0" value="1.5" step="0.1">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="cifar10-seed">Random Seed</label>
+                  <div class="seed-input-row">
+                    <input type="number" id="cifar10-seed" value="0" min="0" max="999999">
+                    <button class="icon-btn dice-btn" id="cifar10-seed-randomize" title="Randomize Seed">🎲</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button class="primary-btn generate-btn" id="cifar10-generate-btn">
+              <span class="btn-spinner hidden"></span>
+              <span class="btn-text">Generate CIFAR-10 Samples</span>
+            </button>
+          </div>
+
+          <!-- Gallery Column -->
+          <div class="gallery-card">
+            <div class="gallery-header">
+              <div class="gallery-info">
+                <h3>Generated Samples</h3>
+                <div id="cifar10-caption" class="caption-text">Select class influences and generate samples.</div>
+              </div>
+              <div id="cifar10-latency" class="latency-badge hidden">0.0s</div>
+            </div>
+            <div id="cifar10-gallery" class="gallery-grid">
+              <div class="empty-state">
+                <div class="empty-icon">🎨</div>
+                <p>Click <strong>Generate Samples</strong> to denoise images with the DiT model.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Fashion-MNIST Panel -->
+      <section id="panel-fashion_mnist" class="tab-panel" role="tabpanel">
+        <div class="panel-layout">
+          <!-- Controls Column -->
+          <div class="controls-card">
+            <div class="card-header">
+              <h2>Fashion-MNIST Generator</h2>
+              <p class="model-badge">Raw-Pixel DiT (6 Blocks, 192 Hidden, 6 Heads)</p>
+            </div>
+
+            <!-- Quick Presets -->
+            <div class="presets-section">
+              <label class="section-label">Quick Class Presets</label>
+              <div class="preset-chips" id="fashion-presets">
+                <button class="chip" data-class="0">👕 Top</button>
+                <button class="chip" data-class="1">👖 Trouser</button>
+                <button class="chip" data-class="2">🧥 Pullover</button>
+                <button class="chip" data-class="3">👗 Dress</button>
+                <button class="chip" data-class="4">🧥 Coat</button>
+                <button class="chip" data-class="5">👡 Sandal</button>
+                <button class="chip" data-class="6">👔 Shirt</button>
+                <button class="chip active" data-class="7">👟 Sneaker</button>
+                <button class="chip" data-class="8">👜 Bag</button>
+                <button class="chip" data-class="9">👢 Boot</button>
+              </div>
+            </div>
+
+            <!-- Class Influence Sliders -->
+            <div class="sliders-section">
+              <div class="sliders-header">
+                <label class="section-label">Class Influences (Multi-Conditioning)</label>
+                <button class="text-btn" id="fashion-reset-sliders">Reset</button>
+              </div>
+              <div class="sliders-grid" id="fashion-sliders-container">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
+
+            <!-- Hyperparameters -->
+            <div class="hyperparams-section">
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="fashion-samples">Number of samples</label>
+                  <span class="value-display" id="fashion-samples-val">8</span>
+                </div>
+                <input type="range" id="fashion-samples" min="1" max="16" value="8" step="1">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="fashion-steps">Denoising steps (DDIM)</label>
+                  <span class="value-display" id="fashion-steps-val">50</span>
+                </div>
+                <input type="range" id="fashion-steps" min="10" max="100" value="50" step="5">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="fashion-cfg">Classifier-Free Guidance (CFG)</label>
+                  <span class="value-display" id="fashion-cfg-val">1.5</span>
+                </div>
+                <input type="range" id="fashion-cfg" min="1.0" max="5.0" value="1.5" step="0.1">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="fashion-seed">Random Seed</label>
+                  <div class="seed-input-row">
+                    <input type="number" id="fashion-seed" value="0" min="0" max="999999">
+                    <button class="icon-btn dice-btn" id="fashion-seed-randomize" title="Randomize Seed">🎲</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button class="primary-btn generate-btn" id="fashion-generate-btn">
+              <span class="btn-spinner hidden"></span>
+              <span class="btn-text">Generate Fashion-MNIST Samples</span>
+            </button>
+          </div>
+
+          <!-- Gallery Column -->
+          <div class="gallery-card">
+            <div class="gallery-header">
+              <div class="gallery-info">
+                <h3>Generated Samples</h3>
+                <div id="fashion-caption" class="caption-text">Select class influences and generate samples.</div>
+              </div>
+              <div id="fashion-latency" class="latency-badge hidden">0.0s</div>
+            </div>
+            <div id="fashion-gallery" class="gallery-grid">
+              <div class="empty-state">
+                <div class="empty-icon">👟</div>
+                <p>Click <strong>Generate Samples</strong> to denoise Fashion-MNIST items.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CelebA Panel -->
+      <section id="panel-celeba" class="tab-panel" role="tabpanel">
+        <div class="panel-layout">
+          <!-- Controls Column -->
+          <div class="controls-card">
+            <div class="card-header">
+              <h2>CelebA Latent Generator</h2>
+              <p class="model-badge">Latent DiT (12 Blocks, 384 Hidden, 6 Heads) + VAE 256×256</p>
+            </div>
+
+            <!-- Popular Attribute Presets -->
+            <div class="presets-section">
+              <label class="section-label">Popular Attribute Combos</label>
+              <div class="preset-chips" id="celeba-presets">
+                <button class="chip active" data-attrs="Smiling,Young">😊 Smiling + Young</button>
+                <button class="chip" data-attrs="Male,Eyeglasses">👓 Male + Glasses</button>
+                <button class="chip" data-attrs="Blond_Hair,Heavy_Makeup">💄 Blond + Makeup</button>
+                <button class="chip" data-attrs="Male,Mustache,Goatee">🧔 Beard / Goatee</button>
+                <button class="chip" data-attrs="Bangs,Straight_Hair">💇‍♀️ Bangs + Straight</button>
+                <button class="chip" data-attrs="">⚪ Unconditioned</button>
+              </div>
+            </div>
+
+            <!-- Attribute Selector -->
+            <div class="attributes-section">
+              <div class="attributes-header">
+                <label class="section-label">Select Facial Attributes (40 available)</label>
+                <div class="attr-actions">
+                  <input type="text" id="celeba-attr-search" placeholder="Search attributes..." class="search-input">
+                  <button class="text-btn" id="celeba-clear-attrs">Clear</button>
+                </div>
+              </div>
+              <div class="attribute-chips-container" id="celeba-attributes-container">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
+
+            <!-- Hyperparameters -->
+            <div class="hyperparams-section">
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="celeba-samples">Number of samples</label>
+                  <span class="value-display" id="celeba-samples-val">4</span>
+                </div>
+                <input type="range" id="celeba-samples" min="1" max="16" value="4" step="1">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="celeba-steps">Denoising steps (DDIM)</label>
+                  <span class="value-display" id="celeba-steps-val">50</span>
+                </div>
+                <input type="range" id="celeba-steps" min="10" max="100" value="50" step="5">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="celeba-cfg">Classifier-Free Guidance (CFG)</label>
+                  <span class="value-display" id="celeba-cfg-val">4.0</span>
+                </div>
+                <input type="range" id="celeba-cfg" min="1.0" max="10.0" value="4.0" step="0.5">
+              </div>
+
+              <div class="control-group">
+                <div class="control-label-row">
+                  <label for="celeba-seed">Random Seed</label>
+                  <div class="seed-input-row">
+                    <input type="number" id="celeba-seed" value="42" min="0" max="999999">
+                    <button class="icon-btn dice-btn" id="celeba-seed-randomize" title="Randomize Seed">🎲</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button class="primary-btn generate-btn" id="celeba-generate-btn">
+              <span class="btn-spinner hidden"></span>
+              <span class="btn-text">Generate CelebA Faces (256×256)</span>
+            </button>
+          </div>
+
+          <!-- Gallery Column -->
+          <div class="gallery-card">
+            <div class="gallery-header">
+              <div class="gallery-info">
+                <h3>Generated Faces</h3>
+                <div id="celeba-caption" class="caption-text">Active attributes: Smiling, Young</div>
+              </div>
+              <div id="celeba-latency" class="latency-badge hidden">0.0s</div>
+            </div>
+            <div id="celeba-gallery" class="gallery-grid gallery-grid-256">
+              <div class="empty-state">
+                <div class="empty-icon">✨</div>
+                <p>Click <strong>Generate CelebA Faces</strong> to denoise in latent space and decode with VAE.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>
+        <strong>LDMAX</strong> — Educational, modular, and high-performance Diffusion Transformers in JAX.
+        Deployed via FastAPI on Google Cloud Run &amp; GitHub Pages.
+      </p>
+    </footer>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Backend Settings</h3>
+        <button id="close-settings-modal" class="icon-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="control-group">
+          <label for="backend-url-input">FastAPI Backend URL</label>
+          <input type="url" id="backend-url-input" class="text-input" placeholder="http://127.0.0.1:8000">
+          <span class="input-hint">Default local development: <code>http://127.0.0.1:8000</code>. For production: <code>https://your-cloud-run-service.a.run.app</code>.</span>
+        </div>
+        <div class="modal-status-preview" id="modal-status-preview">
+          <!-- Live check status -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="test-connection-btn" class="secondary-btn">Test Connection</button>
+        <button id="save-settings-btn" class="primary-btn">Save &amp; Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Detail View & Zoom Modal -->
+  <div id="lightbox-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Image Detail View">
+    <div class="modal-backdrop" id="lightbox-backdrop"></div>
+    <div class="lightbox-container" id="lightbox-container">
+      <!-- Lightbox Header Toolbar -->
+      <div class="lightbox-toolbar">
+        <div class="toolbar-group nav-group">
+          <button id="lightbox-prev-btn" class="toolbar-btn" title="Previous Image (Left Arrow)">◀</button>
+          <span id="lightbox-counter" class="toolbar-counter">1 / 8</span>
+          <button id="lightbox-next-btn" class="toolbar-btn" title="Next Image (Right Arrow)">▶</button>
+          <button id="lightbox-play-btn" class="toolbar-btn" title="Slideshow Autoplay (Space)">▶ Slideshow</button>
+        </div>
+
+        <div class="toolbar-group zoom-group">
+          <button id="lightbox-zoom-out-btn" class="toolbar-btn" title="Zoom Out (-)">−</button>
+          <span id="lightbox-zoom-level" class="zoom-level-text">100%</span>
+          <button id="lightbox-zoom-in-btn" class="toolbar-btn" title="Zoom In (+)">+</button>
+          <button id="lightbox-zoom-reset-btn" class="toolbar-btn" title="Reset Zoom / Fit (0)">Fit</button>
+          <button id="lightbox-pixel-toggle-btn" class="toolbar-btn" title="Toggle Crisp Pixels / Smooth">👾 Crisp</button>
+        </div>
+
+        <div class="toolbar-group transform-group">
+          <button id="lightbox-rotate-btn" class="toolbar-btn" title="Rotate 90° (R)">⟳ Rotate</button>
+          <button id="lightbox-fliph-btn" class="toolbar-btn" title="Flip Horizontal (H)">↔ Flip</button>
+          <button id="lightbox-invert-btn" class="toolbar-btn" title="Invert Colors">🌓 Invert</button>
+        </div>
+
+        <div class="toolbar-group fade-group">
+          <label for="lightbox-fade-slider" class="toolbar-label" title="Image Opacity / Fade Level">Fade:</label>
+          <input type="range" id="lightbox-fade-slider" min="0.1" max="1.0" step="0.05" value="1.0" class="mini-slider" title="Adjust Opacity">
+        </div>
+
+        <div class="toolbar-group actions-group">
+          <button id="lightbox-copy-btn" class="toolbar-btn" title="Copy Image to Clipboard (C)">📋 Copy</button>
+          <button id="lightbox-info-btn" class="toolbar-btn" title="Toggle Metadata Info (I)">ℹ️ Info</button>
+          <button id="lightbox-fullscreen-btn" class="toolbar-btn" title="Toggle Fullscreen (F)">⛶</button>
+          <a id="lightbox-download-btn" class="toolbar-btn download-action" download="ldmax_sample.png" title="Download PNG">⬇️ Save</a>
+          <button id="close-lightbox" class="toolbar-btn close-action" title="Close Detail View (Esc)">✕</button>
+        </div>
+      </div>
+
+      <!-- Zoomable Image Viewport -->
+      <div class="lightbox-viewport" id="lightbox-viewport">
+        <div class="lightbox-image-wrapper" id="lightbox-image-wrapper">
+          <img id="lightbox-img" src="" alt="Enlarged sample" draggable="false">
+        </div>
+
+        <!-- Floating Metadata Info Drawer -->
+        <div id="lightbox-info-drawer" class="lightbox-info-drawer hidden">
+          <div class="info-drawer-header">
+            <h4>Sample Details &amp; Conditioning</h4>
+            <button id="close-info-drawer" class="text-btn">✕</button>
+          </div>
+          <div class="info-drawer-content" id="info-drawer-content">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Lightbox Bottom Status Bar / Hint -->
+      <div class="lightbox-hint">
+        <span>💡 Click image to zoom (2.5×) • Mouse wheel to zoom • Drag to pan • ← / → to switch • R: Rotate • Space: Slideshow • Esc: Close</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
