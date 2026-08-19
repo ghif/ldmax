@@ -37,8 +37,8 @@ const state = {
   backendStatus: "connecting",
   cifar10: {
     weights: [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    samples: 8,
-    steps: 50,
+    samples: 4,
+    steps: 20,
     cfg: 1.5,
     seed: 0,
     generatedImages: [],
@@ -47,8 +47,8 @@ const state = {
   },
   fashion_mnist: {
     weights: [0, 0, 0, 0, 0, 0, 0, 1.0, 0, 0],
-    samples: 8,
-    steps: 50,
+    samples: 4,
+    steps: 20,
     cfg: 1.5,
     seed: 0,
     generatedImages: [],
@@ -57,8 +57,8 @@ const state = {
   },
   celeba: {
     selectedAttributes: new Set(["Smiling", "Young"]),
-    samples: 4,
-    steps: 50,
+    samples: 2,
+    steps: 20,
     cfg: 4.0,
     seed: 42,
     generatedImages: [],
