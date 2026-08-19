@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Literal
@@ -157,10 +158,11 @@ def get_metadata():
 
 
 @app.post("/api/generate/cifar10", response_model=GenerateResponse)
-def generate_cifar10(req: GenerateCIFAR10Request):
+async def generate_cifar10(req: GenerateCIFAR10Request):
     """Generate CIFAR-10 images given class influences."""
     try:
-        images, caption, elapsed = service.generate_cifar10(
+        images, caption, elapsed = await asyncio.to_thread(
+            service.generate_cifar10,
             config_path=settings.cifar10_config,
             checkpoint=settings.cifar10_checkpoint,
             class_weights=req.class_weights,
@@ -175,10 +177,11 @@ def generate_cifar10(req: GenerateCIFAR10Request):
 
 
 @app.post("/api/generate/fashion_mnist", response_model=GenerateResponse)
-def generate_fashion_mnist(req: GenerateFashionMNISTRequest):
+async def generate_fashion_mnist(req: GenerateFashionMNISTRequest):
     """Generate Fashion-MNIST images given class influences."""
     try:
-        images, caption, elapsed = service.generate_fashion_mnist(
+        images, caption, elapsed = await asyncio.to_thread(
+            service.generate_fashion_mnist,
             config_path=settings.fashion_config,
             checkpoint=settings.fashion_checkpoint,
             class_weights=req.class_weights,
@@ -193,10 +196,11 @@ def generate_fashion_mnist(req: GenerateFashionMNISTRequest):
 
 
 @app.post("/api/generate/celeba", response_model=GenerateResponse)
-def generate_celeba(req: GenerateCelebARequest):
+async def generate_celeba(req: GenerateCelebARequest):
     """Generate CelebA faces given binary facial attributes."""
     try:
-        images, caption, elapsed = service.generate_celeba(
+        images, caption, elapsed = await asyncio.to_thread(
+            service.generate_celeba,
             config_path=settings.celeba_config,
             checkpoint=settings.celeba_checkpoint,
             selected_attributes=req.selected_attributes,
@@ -211,12 +215,13 @@ def generate_celeba(req: GenerateCelebARequest):
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
-def unified_generate(req: UnifiedGenerateRequest):
+async def unified_generate(req: UnifiedGenerateRequest):
     """Unified generation endpoint supporting all three datasets."""
     try:
         if req.dataset == "cifar10":
             class_weights = req.class_weights or ([1.0] + [0.0] * 9)
-            images, caption, elapsed = service.generate_cifar10(
+            images, caption, elapsed = await asyncio.to_thread(
+                service.generate_cifar10,
                 config_path=settings.cifar10_config,
                 checkpoint=settings.cifar10_checkpoint,
                 class_weights=class_weights,
@@ -227,7 +232,8 @@ def unified_generate(req: UnifiedGenerateRequest):
             )
         elif req.dataset == "fashion_mnist":
             class_weights = req.class_weights or ([0.0] * 7 + [1.0] + [0.0] * 2)
-            images, caption, elapsed = service.generate_fashion_mnist(
+            images, caption, elapsed = await asyncio.to_thread(
+                service.generate_fashion_mnist,
                 config_path=settings.fashion_config,
                 checkpoint=settings.fashion_checkpoint,
                 class_weights=class_weights,
@@ -238,7 +244,8 @@ def unified_generate(req: UnifiedGenerateRequest):
             )
         elif req.dataset == "celeba":
             selected_attrs = req.selected_attributes or ["Smiling", "Young"]
-            images, caption, elapsed = service.generate_celeba(
+            images, caption, elapsed = await asyncio.to_thread(
+                service.generate_celeba,
                 config_path=settings.celeba_config,
                 checkpoint=settings.celeba_checkpoint,
                 selected_attributes=selected_attrs,
