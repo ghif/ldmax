@@ -19,28 +19,40 @@ from src.utils.config import load_config
 from src.utils.rng import RNGManager
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string(
-    "config", "configs/fashion_mnist.yaml", "Training config used to build the model."
-)
-flags.DEFINE_string(
-    "checkpoint",
-    "",
-    "Local Orbax checkpoint or GCS checkpoint, for example "
-    "outputs/fashion_mnist/checkpoints/1000 or "
-    "gs://bucket/models/run/checkpoints. If a run/checkpoints directory is "
-    "provided, the highest numeric checkpoint is selected automatically.",
-)
-flags.DEFINE_integer("num_samples", 16, "Number of images to generate.")
-flags.DEFINE_integer("num_inference_steps", 50, "Number of DDIM denoising steps.")
-flags.DEFINE_float("cfg_scale", -1.0, "Override config classifier-free guidance scale.")
-flags.DEFINE_integer("class_id", -1, "Class ID 0-9, or -1 for all classes.")
-flags.DEFINE_integer("seed", 0, "Random seed for the initial noise.")
-flags.DEFINE_string("output_path", "./fashion_mnist_samples.png", "Path for the output image grid.")
-flags.DEFINE_bool(
-    "cpu_only",
-    False,
-    "Force CPU execution and restore TPU checkpoints onto the local CPU.",
-)
+if "config" not in FLAGS:
+    flags.DEFINE_string(
+        "config", "configs/fashion_mnist.yaml", "Training config used to build the model."
+    )
+if "checkpoint" not in FLAGS:
+    flags.DEFINE_string(
+        "checkpoint",
+        "",
+        "Local Orbax checkpoint or GCS checkpoint, for example "
+        "outputs/fashion_mnist/checkpoints/1000 or "
+        "gs://bucket/models/run/checkpoints. If a run/checkpoints directory is "
+        "provided, the highest numeric checkpoint is selected automatically.",
+    )
+if "num_samples" not in FLAGS:
+    flags.DEFINE_integer("num_samples", 16, "Number of images to generate.")
+if "num_inference_steps" not in FLAGS:
+    flags.DEFINE_integer("num_inference_steps", 50, "Number of DDIM denoising steps.")
+if "cfg_scale" not in FLAGS:
+    flags.DEFINE_float("cfg_scale", -1.0, "Override config classifier-free guidance scale.")
+if "class_id" not in FLAGS:
+    flags.DEFINE_integer("class_id", -1, "Class ID 0-9, or -1 for all classes.")
+if "seed" not in FLAGS:
+    flags.DEFINE_integer("seed", 0, "Random seed for the initial noise.")
+if "output_path" not in FLAGS:
+    flags.DEFINE_string(
+        "output_path", "./fashion_mnist_samples.png", "Path for the output image grid."
+    )
+if "cpu_only" not in FLAGS:
+    flags.DEFINE_bool(
+        "cpu_only",
+        False,
+        "Force CPU execution and restore TPU checkpoints onto the local CPU.",
+    )
+
 
 
 def _build_model(config, seed: int, label_mode: str, label_dropout_prob: float) -> DiT:
