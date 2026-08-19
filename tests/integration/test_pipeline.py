@@ -1,26 +1,21 @@
 """Integration tests for the full DiT pipeline."""
 
-import os
-from absl import flags
+from pathlib import Path
 
-from src.training.runner import main as train_main
+from src.training.trainer import Trainer
+
 
 def test_full_pipeline_short_run(tmp_path):
     """Test that the full training pipeline can run for a few steps."""
     output_dir = tmp_path / "outputs"
-    config_path = "configs/cifar10_test.yaml"
-    
-    # Use flags.FLAGS to mock CLI arguments
-    FLAGS = flags.FLAGS
-    # Parse flags manually for testing
-    FLAGS(["test", "--config", config_path, "--output_dir", str(output_dir)])
-    
-    try:
-        train_main([])
-    except SystemExit:
-        pass # absl.app.run might call sys.exit
-        
-    assert os.path.exists(output_dir / "checkpoints")
-    assert os.path.exists(output_dir / "logs")
-    # The test config runs for two steps, numbered 0 and 1.
-    assert os.path.exists(output_dir / "checkpoints" / "1")
+    config_path = Path("configs/cifar10_test.yaml")
+
+    trainer = Trainer(
+        config=config_path,
+        output_dir=output_dir,
+    )
+    trainer.run()
+
+    assert (output_dir / "checkpoints").exists()
+    assert (output_dir / "logs").exists()
+    assert (output_dir / "checkpoints" / "1").exists()

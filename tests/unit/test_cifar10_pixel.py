@@ -1,7 +1,6 @@
 """Tests for the native-pixel CIFAR10 workflow."""
 
 import jax.numpy as jnp
-import pytest
 from flax import nnx
 
 from src.models.dit.dit import DiT, resolve_conditioning_mode
@@ -9,6 +8,7 @@ from src.training.sampler import DDIMSampler
 
 
 def test_cifar10_pixel_model_outputs_rgb_class_conditioned():
+    """Verify class-conditioned DiT output shape for pixel CIFAR-10."""
     model = DiT(
         input_size=32,
         patch_size=2,
@@ -25,6 +25,7 @@ def test_cifar10_pixel_model_outputs_rgb_class_conditioned():
 
 
 def test_cifar10_pixel_model_outputs_rgb_unconditionally():
+    """Verify unconditional DiT output shape for pixel CIFAR-10."""
     model = DiT(
         input_size=32,
         patch_size=2,
@@ -40,20 +41,8 @@ def test_cifar10_pixel_model_outputs_rgb_unconditionally():
     assert output.shape == (2, 32, 32, 3)
 
 
-def test_cifar10_pixel_config_validation():
-    pytest.importorskip("datasets")
-    pytest.importorskip("ml_collections")
-    from src.training.cifar10_runner import _validate_config
-    from src.utils.config import load_config
-
-    config = load_config("configs/cifar10_pixel.yaml")
-    _validate_config(config)
-    config.model.input_size = 16
-    with pytest.raises(ValueError, match="input_size=32"):
-        _validate_config(config)
-
-
 def test_ddim_pixel_clipping_keeps_clean_prediction_bounded():
+    """Verify that DDIM clip_denoised keeps outputs within [-1.0, 1.0]."""
     sampler = DDIMSampler()
 
     def model_fn(x, t, y):
@@ -73,35 +62,3 @@ def test_ddim_pixel_clipping_keeps_clean_prediction_bounded():
     assert result.shape == (1, 4, 4, 3)
     assert jnp.all(result <= 1.0)
     assert jnp.all(result >= -1.0)
-
-
-def test_cifar10_resolve_resume_checkpoint(tmp_path, monkeypatch):
-    from pathlib import Path
-    from src.training.cifar10_runner import _resolve_resume_checkpoint
-
-    run_dir = tmp_path / "cifar_run"
-    (run_dir / "checkpoints").mkdir(parents=True)
-
-    class FakeCheckpointManager:
-        def __init__(self, directory):
-            assert Path(directory) == run_dir / "checkpoints"
-
-        def latest_step(self):
-            return 5000
-
-    monkeypatch.setattr(
-        "src.training.cifar10_runner.CheckpointManager",
-        FakeCheckpointManager,
-    )
-
-    checkpoint_root, step = _resolve_resume_checkpoint(str(run_dir))
-    assert checkpoint_root == (run_dir / "checkpoints").resolve()
-    assert step == 5000
-
-
-def test_cifar10_resolve_rejects_unrecognized_path(tmp_path):
-    from src.training.cifar10_runner import _resolve_resume_checkpoint
-
-    with pytest.raises(ValueError, match="--resume_from"):
-        _resolve_resume_checkpoint(str(tmp_path))
-

@@ -2,220 +2,224 @@
 
 ![JAX](https://img.shields.io/badge/JAX-Enabled-blue.svg)
 ![Flax NNX](https://img.shields.io/badge/Flax-NNX-orange.svg)
-![Python 3.11](https://img.shields.io/badge/Python-3.11-green.svg)
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
-**LDMAX** is an educational and collaborative AI research repository focused on training **Latent Diffusion Models (LDM)** from scratch. Built entirely on the modern JAX ecosystem, it serves as a highly readable, modular, and performant foundation for generative model research.
+**LDMAX** is an educational, modular, and high-performance research codebase for training and sampling from **Diffusion Transformers (DiT)** from scratch in the modern JAX ecosystem.
 
-## 🌟 Core Principles
+---
 
-LDMAX adheres to five foundational tenets:
-1. **Educational First & Clear Documentation**: Code is extensively documented for clarity and pedagogical value.
-2. **Clean Code Architecture**: Strictly modular design using SOLID principles and dependency injection.
-3. **Collaborative AI Research**: Architecture-agnostic structure allows easy swapping of models and datasets.
-4. **Visual Generative Focus**: Tooling optimized for spatial data and visual metrics (FID).
-5. **Deterministic Reproducibility**: Enforces fixed random seeds and explicit environments.
+## 🌟 Architecture & Core Principles
 
-## 🚀 Key Features
+LDMAX is built on a **Clean Architecture** with strict separation of concerns across dataset pipelines, model architectures, training orchestration, and evaluation services:
 
-- **Live VAE Encoding**: JIT-compiled encoding of images into latent space during training using pre-trained VAEs (e.g., Stable Diffusion's autoencoder).
-- **Flax NNX**: Leverages the new reference-based Flax API for intuitive model management.
-- **Grain Data Pipelines**: High-performance deterministic data loading using `google-grain` and Hugging Face `datasets`.
-- **Architecture Agnostic**: Core logic is separated from specific model implementations, allowing easy integration of DiT, UNets, or new variants.
-- **Advanced Training**: Includes `bfloat16` mixed precision, Exponential Moving Average (EMA) weight tracking, and Orbax async checkpointing.
+```mermaid
+flowchart TD
+    Config["YAML Experiment Configs\n(configs/*.yaml)"] --> CLI["CLI Dispatchers\n(scripts/train.py, scripts/sample.py)"]
+    CLI --> Trainer["Unified Trainer Engine\n(src/training/trainer.py)"]
+
+    subgraph Data Layer
+        Trainer --> DataFactory["Data Factory\n(src/data/factory.py)"]
+        DataFactory --> Loaders["Grain / Hugging Face Loaders\n(CIFAR-10, Fashion-MNIST, CelebA)"]
+    end
+
+    subgraph Model Layer
+        Trainer --> ModelFactory["Model Factory\n(src/models/factory.py)"]
+        ModelFactory --> DiTModel["Diffusion Transformer (DiT)\n(Flax NNX)"]
+    end
+
+    subgraph Services & Infrastructure
+        Trainer --> CkptService["Checkpoint Service\n(src/training/checkpointing.py)"]
+        Trainer --> Evaluator["Evaluation & Visualizer\n(src/training/evaluator.py)"]
+        Evaluator --> VAE["VAEManager\n(Latent Space Decoding)"]
+        Evaluator --> PixelNorm["Pixel Unnormalizer\n(Raw Pixel Space)"]
+    end
+```
+
+### Key Technologies
+- **Core Framework**: JAX (`jax`, `jax.numpy`), JIT compilation (`jax.jit`).
+- **Model Definition**: **Flax NNX** (`flax.nnx`), the reference-based object-oriented API for Flax.
+- **Optimization**: Optax (`optax`) with AdamW and EMA weight tracking.
+- **Checkpointing**: Orbax (`orbax.checkpoint`) with async saving and GCS synchronization.
+- **Data Loading**: Google Grain (`grain.python`) for high-throughput sharded pipelines (CIFAR-10, CelebA), alongside Hugging Face `datasets` / NumPy in-memory iterators (Fashion-MNIST).
+- **Precision**: Mixed-precision support with `bfloat16` and explicit FP32 parameter and schedule management for TPU/GPU execution.
+
+---
+
+## 📁 Repository Structure
+
+```text
+ldmax/
+├── configs/               # YAML experiment configurations
+│   ├── celeba*.yaml       # CelebA latent-space configurations (256x256 -> 32x32 latents)
+│   ├── cifar10*.yaml      # CIFAR-10 latent & native-pixel configurations
+│   └── fashion_mnist*.yaml# Fashion-MNIST raw-pixel configurations (28x28 grayscale)
+├── docs/                  # Specs, design documents, and research notes
+├── scripts/               # Thin CLI entry points
+│   ├── train.py           # Unified training CLI
+│   ├── sample.py          # Unified standalone sampling CLI
+│   ├── train_cifar10.py   # CIFAR-10 training launcher
+│   ├── train_fashion_mnist.py # Fashion-MNIST training launcher
+│   ├── train_celeba.py    # CelebA training launcher
+│   ├── demo_cifar10.py    # Interactive Gradio demo for CIFAR-10
+│   └── demo_fashion_mnist.py # Interactive Gradio demo for Fashion-MNIST
+├── src/                   # Core library code
+│   ├── data/              # Dataset sources and factory
+│   │   ├── celeba.py      # CelebA Grain pipeline
+│   │   ├── cifar.py       # CIFAR-10 Grain pipeline
+│   │   ├── fashion_mnist.py # Fashion-MNIST pipeline
+│   │   └── factory.py     # Unified DataLoaderBundle & metadata factory
+│   ├── models/            # Model architectures and factory
+│   │   ├── dit/           # DiT & AdaLN-Zero blocks
+│   │   └── factory.py     # Unified create_model factory
+│   ├── sampling/          # Sampling utilities & offline generation
+│   │   └── generator.py   # Unified standalone image generator
+│   ├── training/          # Training infrastructure & services
+│   │   ├── checkpointing.py # State validation & Orbax restore services
+│   │   ├── ema.py         # Exponential Moving Average manager
+│   │   ├── evaluator.py   # Sampling evaluator & grid visualizer
+│   │   ├── sampler.py     # DDIM sampling engine
+│   │   ├── step.py        # JIT training step & MSE loss computation
+│   │   └── trainer.py     # Unified config-driven Trainer engine
+│   └── utils/             # Utilities (checkpoint, config, logging, RNG, VAE)
+├── tests/                 # Unit & integration tests
+│   ├── unit/              # Unit tests for models, factories, checkpointing, trainer
+│   └── integration/       # End-to-end integration tests
+└── pyproject.toml         # Project configuration and linter settings
+```
+
+---
 
 ## 🛠️ Installation
 
 ```bash
-# 1. Setup Conda Environment
+# 1. Create and activate conda environment
 conda create -n ldmax python=3.11 -y
 conda activate ldmax
 
-# 2. Install dependencies for your target accelerator.
-#    Choose one: requirements_cpu.txt, requirements_gpu.txt, or requirements_tpu.txt.
+# 2. Install dependencies for your target hardware:
+# CPU:
 pip install -r requirements_cpu.txt
-
-# 3. For GPU or TPU, replace the previous command with the matching file:
+# GPU (CUDA):
 # pip install -r requirements_gpu.txt
+# TPU:
 # pip install -r requirements_tpu.txt
 ```
 
-The Fashion MNIST runner is single-device and does not require a mesh, Grain,
-or accelerator-specific model code. With one visible local device, JAX places
-the model and computations on that device automatically. Select the backend
-through the JAX installation and runtime environment, for example with
-`JAX_PLATFORMS=cpu` when explicitly testing CPU execution.
+---
 
-The TPU Fashion MNIST configuration uses conservative BF16 mixed precision:
-model parameters, optimizer state, EMA weights, normalization, diffusion
-schedules, and loss reductions remain FP32, while activations and matrix
-multiplications use BF16. This preserves the quality of the FP32 path while
-allowing TPU acceleration.
+## 🏃‍♂️ Quickstart Workflows
 
-## 🏃‍♂️ Quickstart
+### 1. Training
 
-### Training
-
-LDMAX supports training in the latent space for multiple datasets:
-
-**Fashion MNIST raw-pixel diffusion:**
-
-This path trains DiT directly on `28 × 28 × 1` grayscale images. It does not
-load or call the latent VAE encoder or decoder. To keep the introductory data
-path easy to follow, it uses Hugging Face Datasets with simple NumPy batching;
-the larger CIFAR-10 and CelebA pipelines use Grain for higher-throughput data
-loading and sharding.
+Run training across any dataset using the unified entry point:
 
 ```bash
-export PYTHONPATH=$PYTHONPATH:.
-python -m scripts.train_fashion_mnist \
+# Unified Training CLI
+PYTHONPATH=. python scripts/train.py \
+    --config configs/cifar10_pixel.yaml \
+    --output_dir outputs/cifar10_run
+
+# Fashion-MNIST Raw-Pixel Diffusion (28x28 Grayscale)
+PYTHONPATH=. python scripts/train_fashion_mnist.py \
     --config configs/fashion_mnist.yaml \
-    --output_dir ./outputs/fashion_mnist
+    --output_dir outputs/fashion_mnist_run
+
+# CIFAR-10 Native-Pixel Diffusion (32x32 RGB)
+PYTHONPATH=. python scripts/train_cifar10.py \
+    --config configs/cifar10_pixel.yaml \
+    --output_dir outputs/cifar10_pixel_run
+
+# CelebA Latent Diffusion (256x256 -> 32x32 Latents with VAE)
+PYTHONPATH=. python scripts/train_celeba.py \
+    --config configs/celeba.yaml \
+    --output_dir outputs/celeba_run
 ```
 
-For a two-step smoke run, use `configs/fashion_mnist_test.yaml`.
-
-**CIFAR10 native-pixel diffusion:**
-
-The native-pixel CIFAR10 workflow trains directly on normalized `32 × 32 × 3`
-RGB images and does not load or call a VAE. It supports both class-conditional
-and unconditional DiT models; set `model.conditioning` in the config to select
-the mode.
+#### Resuming Training
+To resume training seamlessly from an existing run or specific checkpoint step:
 
 ```bash
-python -m scripts.train_cifar10 \
+PYTHONPATH=. python scripts/train.py \
     --config configs/cifar10_pixel.yaml \
-    --output_dir ./outputs/cifar10_pixel
+    --resume_from outputs/cifar10_run \
+    --output_dir outputs/cifar10_resumed
 ```
 
-Use `configs/cifar10_pixel_test.yaml` for a two-step smoke run. To generate
-class-conditional samples from an EMA checkpoint:
+---
+
+### 2. Standalone Sampling
+
+Generate visual sample grids from a trained checkpoint or EMA weights:
 
 ```bash
-python -m scripts.sample_cifar10 \
+# Unified Sampling CLI
+PYTHONPATH=. python scripts/sample.py \
     --config configs/cifar10_pixel.yaml \
-    --checkpoint ./outputs/cifar10_pixel/checkpoints/5000 \
+    --checkpoint outputs/cifar10_pixel_run/checkpoints/5000 \
+    --num_samples 16 \
     --class_id 3 \
-    --output_path ./samples/cifar10.png
-```
+    --output_path samples/cifar10_class3.png
 
-Pixel-space sampling clips predicted clean images to `[-1, 1]`; the existing
-latent-VAE sampling workflows retain their previous behavior.
-
-To sample from a saved Fashion MNIST checkpoint and write a grayscale image
-grid:
-
-```bash
-export PYTHONPATH=$PYTHONPATH:.
-python -m scripts.sample_fashion_mnist \
-    --config configs/fashion_mnist.yaml \
-    --checkpoint ./outputs/fashion_mnist/checkpoints/1000 \
+# Attribute-Conditioned CelebA Sampling
+PYTHONPATH=. python scripts/sample.py \
+    --config configs/celeba.yaml \
+    --checkpoint outputs/celeba_run/checkpoints/50000 \
     --num_samples 16 \
-    --output_path ./samples/fashion_mnist.png
+    --attribute_names "Smiling,Eyeglasses" \
+    --output_path samples/celeba_custom.png
 ```
 
-To generate samples for one Fashion MNIST class, use the dedicated
-class-conditional script. Fashion MNIST class IDs are 0–9.
+---
+
+### 3. Monitoring & Visual Evaluation
+
+Launch TensorBoard to monitor live loss curves and generated sample grids:
 
 ```bash
-python -m scripts.sample_fashion_mnist_conditional \
+tensorboard --logdir outputs
+```
+
+---
+
+### 4. Interactive Demos
+
+Launch interactive Gradio browser demos for sampling and class blending:
+
+```bash
+# CIFAR-10 Demo
+PYTHONPATH=. python scripts/demo_cifar10.py \
+    --config configs/cifar10_pixel.yaml \
+    --checkpoint outputs/cifar10_pixel_run/checkpoints/5000
+
+# Fashion-MNIST Demo
+PYTHONPATH=. python scripts/demo_fashion_mnist.py \
     --config configs/fashion_mnist.yaml \
-    --checkpoint ./outputs/fashion_mnist/checkpoints/1000 \
-    --class_id 7 \
-    --num_samples 16 \
-    --output_path ./samples/fashion_mnist_sneakers.png
+    --checkpoint outputs/fashion_mnist_run/checkpoints/1000
 ```
 
-The `--checkpoint` argument also accepts an Orbax checkpoint stored in GCS,
-for example `gs://diffjax/models/fashion-mnist_tpu_09-08-2026/checkpoints/12000`.
-The checkpoint is downloaded to `~/.cache/ldmax/checkpoints` and reused on
-subsequent runs. Configure Google Cloud Application Default Credentials before
-sampling from a private bucket.
+---
 
-To continue Fashion MNIST training from the latest checkpoint in an existing
-run, provide `--resume_from` and a new `--output_dir`. `training.total_steps`
-is the absolute target step, so this resumes step 5000 toward step 10000:
+## 🧪 Testing & Verification
+
+LDMAX includes a comprehensive test suite verifying factories, checkpoint serialization, state management, model outputs, and end-to-end training runs:
 
 ```bash
-python -m scripts.train_fashion_mnist \
-    --config configs/fashion_mnist.yaml \
-    --resume_from models/fashion-mnist_ccond_cpu_10-08-2026 \
-    --output_dir models/fashion-mnist_ccond_cpu_10-08-2026_resume
+# Run unit and integration tests
+JAX_PLATFORMS=cpu PYTHONPATH=. pytest tests/
+
+# Run code linter
+ruff check .
+
+# Run code formatter check
+ruff format --check .
 ```
 
-New checkpoints include the RNG state. Older checkpoints without RNG state,
-including the step-5000 checkpoint above, use a deterministic seed-and-step
-fallback, so their continuation cannot reproduce the exact original random
-stream after the saved step.
-
-**CIFAR-10 ($128 \times 128 \to 16 \times 16$ latents):**
-```bash
-export PYTHONPATH=$PYTHONPATH:.
-python -m scripts.train --config configs/cifar10.yaml --output_dir ./outputs/cifar
-```
-
-**CelebA ($256 \times 256 \to 32 \times 32$ latents):**
-```bash
-export PYTHONPATH=$PYTHONPATH:.
-python -m scripts.train --config configs/celeba.yaml --output_dir ./outputs/celeba
-```
-
-**CelebA TPU v6e batch sweep:**
-```bash
-export PYTHONPATH=$PYTHONPATH:.
-python -m scripts.train --config configs/celeba_tpu_b128.yaml --output_dir ./outputs/celeba_b128
-python -m scripts.train --config configs/celeba_tpu_b256.yaml --output_dir ./outputs/celeba_b256
-python -m scripts.train --config configs/celeba_tpu_b384.yaml --output_dir ./outputs/celeba_b384
-```
-Use the run with the best samples/sec and stable loss as the final CelebA TPU configuration.
-
-### 2. Monitoring
-
-Track loss and view periodic visual samples in TensorBoard:
-```bash
-tensorboard --logdir ./outputs
-```
-
-### 3. Standalone Sampling
-
-Generate high-quality samples from a saved checkpoint:
-```bash
-export PYTHONPATH=$PYTHONPATH:.
-python -m scripts.sample \
-    --checkpoint ./outputs/celeba/checkpoints/50000 \
-    --num_samples 16 \
-    --num_steps 50 \
-    --output_path ./samples.png
-```
-
-## 📁 Project Structure
-
-```text
-src/
-├── models/             # Architecture implementations (e.g., dit/)
-├── data/               # Dataset loaders (CIFAR, CelebA) via Grain
-├── training/           # Shared training steps, samplers, and EMA
-├── utils/              # VAE, Checkpointing (Orbax), Logging, RNG
-└── scripts/            # Thin CLI launchers only
-tests/                  # Unit & Integration tests
-configs/                # YAML experiment definitions
-```
-
-## 🧪 Verification
-
-LDMAX includes a comprehensive test suite covering data loading, model forward passes, and VAE reconstruction.
-
-```bash
-# Run all tests
-export PYTHONPATH=$PYTHONPATH:.
-pytest tests/
-
-# Visual verification (checks VAE reconstruction quality)
-pytest -s tests/unit/test_vae.py
-```
+---
 
 ## 📚 References
 
-- **Scalable Diffusion Models with Transformers (DiT)** ([Peebles et al. 2023](https://arxiv.org/abs/2212.09748))
+- **Scalable Diffusion Models with Transformers (DiT)** ([Peebles & Xie, 2023](https://arxiv.org/abs/2212.09748))
 - **Flax NNX** ([Documentation](https://flax.readthedocs.io/en/latest/nnx/index.html))
-- **Hugging Face Datasets** ([cifar10](https://huggingface.co/datasets/uoft-cs/cifar10), [celeba](https://huggingface.co/datasets/nielsr/CelebA-faces))
+- **Google Grain** ([Repository](https://github.com/google/grain))
+- **Orbax Checkpoint** ([Documentation](https://orbax.readthedocs.io/))

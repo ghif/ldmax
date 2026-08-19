@@ -146,11 +146,14 @@ cython_debug/
 # Research Artifacts
 *.ipynb
 
-# Orbax/Checkpoints
-checkpoints/
-models/
-outputs/
-logs/
-samples/
+# Orbax/Checkpoints & Local Artifacts
+/checkpoints/
+/models/
+/outputs/
+/logs/
+/samples/
+/*_extracted/
+/tpu/
+/docs/
 tests/debug_outputs/
 test_outputs*/
