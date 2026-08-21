@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gc
 import io
 import time
 from typing import Any
@@ -92,6 +93,9 @@ def _restore_model_ema(model: DiT, checkpoint: str) -> None:
         if isinstance(value, dict) and "value" in value:
             value = value["value"]
         variable.value = value
+
+    del state, checkpoint_state, restore_template, restore_args, pure_state
+    gc.collect()
 
 
 def _image_to_base64_png(image_array: np.ndarray) -> str:
@@ -212,6 +216,8 @@ class DiffusionService:
         )
         caption = f"Influences: {active_str}"
         elapsed = time.perf_counter() - start_time
+        del samples, images_np, rgb_list
+        gc.collect()
         return base64_images, caption, elapsed
 
     def generate_fashion_mnist(
@@ -278,6 +284,8 @@ class DiffusionService:
         )
         caption = f"Influences: {active_str}"
         elapsed = time.perf_counter() - start_time
+        del samples, images_np, gray_list
+        gc.collect()
         return base64_images, caption, elapsed
 
     def generate_celeba(
@@ -341,4 +349,6 @@ class DiffusionService:
         )
         caption = f"Active attributes: {active_str}"
         elapsed = time.perf_counter() - start_time
+        del latents, decoded_images, rgb_list, y, y_tensor, null_y
+        gc.collect()
         return base64_images, caption, elapsed
