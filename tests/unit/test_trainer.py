@@ -113,3 +113,13 @@ def test_trainer_initialization_and_short_run(tmp_path, monkeypatch):
 
     # Verify artifacts and checkpoint directories
     assert (output_dir / "checkpoints").is_dir()
+
+    # Verify train_logs.txt exists and captured detailed telemetry
+    log_file = output_dir / "train_logs.txt"
+    assert log_file.is_file()
+    log_content = log_file.read_text(encoding="utf-8")
+    assert "step=00001/00002" in log_content
+    assert "train_step_sec=" in log_content
+    assert "train_samples_per_sec=" in log_content
+    assert "data_wait_sec=" in log_content
+    assert "Training finished in" in log_content

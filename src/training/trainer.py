@@ -96,6 +96,9 @@ class Trainer:
         self.rng = RNGManager(seed)
         self.logger = TensorBoardLogger(os.path.join(self.output_dir, "logs"))
 
+        log_path = os.path.join(self.output_dir, "train_logs.txt")
+        self.train_log_file = open(log_path, "a" if self.resume_from else "w", encoding="utf-8")
+
         gcs_dir = _cfg_get(self.config.training, "gcs_directory", "gs://diffjax/models")
         if not gcs_dir or not str(gcs_dir).startswith("gs://"):
             gcs_dir = None
@@ -152,6 +155,17 @@ class Trainer:
         if self.resume_from:
             self._resume_checkpoint()
 
+    def emit(self, message: str) -> None:
+        """Print message to stdout and mirror to train_logs.txt."""
+        print(message, flush=True)
+        if (
+            hasattr(self, "train_log_file")
+            and self.train_log_file
+            and not self.train_log_file.closed
+        ):
+            self.train_log_file.write(message + "\n")
+            self.train_log_file.flush()
+
     def _resume_checkpoint(self) -> None:
         """Restore model, optimizer, EMA, and RNG state from resume path."""
         checkpoint_root, restored_step = resolve_resume_checkpoint(self.resume_from)
@@ -190,7 +204,7 @@ class Trainer:
             self.rng = RNGManager.from_seed_and_step(self.config.training.seed, restored_step)
 
         self.start_step = restored_step
-        print(f"Resumed training from step {restored_step} ({checkpoint_root})")
+        self.emit(f"Resumed training from step {restored_step} ({checkpoint_root})")
 
     def run(self) -> None:
         """Execute the training loop."""
@@ -240,6 +254,10 @@ class Trainer:
                 if step % log_interval == 0:
                     train_loss = float(metrics["loss"])
                     train_step_duration = time.perf_counter() - train_step_start
+                    train_steps_per_sec = 1.0 / max(train_step_duration, 1e-12)
+                    batch_size = inputs.shape[0]
+                    train_samples_per_sec = batch_size * train_steps_per_sec
+                    elapsed_sec = time.perf_counter() - training_start
 
                     if val_iter is not None:
                         val_batch = next(val_iter)
@@ -271,20 +289,34 @@ class Trainer:
                             "train/loss": train_loss,
                             "validation/loss": val_loss,
                             "performance/train_step_sec": train_step_duration,
+                            "performance/train_steps_per_sec": train_steps_per_sec,
+                            "performance/train_samples_per_sec": train_samples_per_sec,
                             "performance/data_wait_sec": data_wait_duration,
                             "performance/train_dispatch_sec": train_dispatch_duration,
                             "performance/ema_update_sec": ema_update_duration,
                             "performance/validation_step_sec": val_step_duration,
                             "performance/sampling_sec": sampling_duration,
                             "performance/gcs_sync_sec": gcs_sync_duration,
+                            "performance/elapsed_sec": elapsed_sec,
                         },
                     )
                     self.logger.flush()
 
-                    print(
+                    self.emit(
                         f"step={step + 1:05d}/{total_steps:05d} "
-                        f"progress={progress:.2f}% train_loss={train_loss:.6f} "
-                        f"val_loss={val_loss:.6f}"
+                        f"progress={progress:.2f}% "
+                        f"train_loss={train_loss:.6f} "
+                        f"validation_loss={val_loss:.6f} "
+                        f"train_step_sec={train_step_duration:.6f} "
+                        f"train_steps_per_sec={train_steps_per_sec:.2f} "
+                        f"train_samples_per_sec={train_samples_per_sec:.1f} "
+                        f"data_wait_sec={data_wait_duration:.6f} "
+                        f"train_dispatch_sec={train_dispatch_duration:.6f} "
+                        f"ema_update_sec={ema_update_duration:.6f} "
+                        f"validation_step_sec={val_step_duration:.6f} "
+                        f"sampling_sec={sampling_duration:.6f} "
+                        f"gcs_sync_sec={gcs_sync_duration:.6f} "
+                        f"elapsed_sec={elapsed_sec:.3f}"
                     )
 
                 # Periodic Sampling
@@ -319,7 +351,13 @@ class Trainer:
 
         finally:
             self.logger.close()
+            elapsed = time.perf_counter() - training_start
+            self.emit(f"Training finished in {elapsed:.2f}s.")
+            if (
+                hasattr(self, "train_log_file")
+                and self.train_log_file
+                and not self.train_log_file.closed
+            ):
+                self.train_log_file.close()
             if self.checkpointer.gcs_directory is not None:
                 self.checkpointer.sync_to_gcs()
-            elapsed = time.perf_counter() - training_start
-            print(f"Training finished in {elapsed:.2f}s.")
